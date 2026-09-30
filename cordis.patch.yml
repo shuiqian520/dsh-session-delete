@@ -1,0 +1,6 @@
+# dsh-session-delete 打包补丁:把本插件以单条目注入 profile 根。
+# host 半区注册 /api/session-delete/* 路由,client 半区在
+# sidebar.workspaces.session.menu.item 追加「删除此会话」。
+- insert:
+    - id: session-delete
+      name: dsh-session-delete

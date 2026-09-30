@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session delete & retry",
+    "description": "Permanently delete a session from the sidebar session menu, and retry a user message or an assistant reply from the buttons right of Copy."
+  }
+}

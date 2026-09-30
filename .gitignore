@@ -1,0 +1,17 @@
+# --- runtime / build -------------------------------------------------------
+node_modules/
+dist/
+*.tgz
+
+# --- local verification harness (machine-specific paths + live secrets) -----
+# tools/ holds this repo's local restart/probe scripts. They reference absolute
+# paths on the author's machine and read a per-process GUI launch token, so they
+# stay out of the repository. tool examples live in docs/internals.md instead.
+tools/
+
+# --- editor / OS -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
