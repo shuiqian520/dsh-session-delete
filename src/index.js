@@ -54,6 +54,9 @@ export const MESSAGES = {
   systemError: '操作失败(系统级错误,详见服务端日志)',
   retryNoTarget: '找不到这条消息对应的可重发输入',
   retryNoText: '这条消息没有可重发的文本内容',
+  missingConfirm: '缺少确认标记',
+  bulkEmpty: '没有要删除的会话',
+  bulkTooMany: '一次最多删除 200 个会话,请分批处理',
 }
 
 const NS = 'dsh-session-delete'
@@ -61,10 +64,16 @@ const ROUTE_STATUS = '/api/session-delete/status'
 const ROUTE_DELETE = '/api/session-delete/delete'
 const ROUTE_SWEEP = '/api/session-delete/sweep'
 const ROUTE_RETRY_SOURCE = '/api/session-delete/retry-source'
+const ROUTE_SESSIONS = '/api/session-delete/sessions'
+const ROUTE_DELETE_MANY = '/api/session-delete/delete-many'
 const BODY_LIMIT_BYTES = 64 * 1024
 const DETACH_ATTEMPTS = 6
 const DETACH_RETRY_MS = 150
 const DETACH_TIMEOUT_MS = 10 * 1000
+/** 会话清单默认/最大返回条数,以及单次批删上限。 */
+const LIST_LIMIT_DEFAULT = 300
+const LIST_LIMIT_MAX = 1000
+const BULK_DELETE_MAX = 200
 
 /** 同 id 并发删除集合:第二次进入直接拒绝,避免同产物两次处置。 */
 const inFlight = new Set()
@@ -291,6 +300,157 @@ async function resolveDeleteTarget(ctx, sessionId) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
+ * 单会话删除核心 —— 单删路由与批删路由共用这一条管线,保证两条入口行为完全一致。
+ *
+ * 顺序:定位产物 → 处置产物(purge / 系统回收站 / 回收区降级) → 摘宿主内存实例 →
+ * 解绑工作区 → 清归档集合残留 → 补发官方 `api-session/removed`。
+ *
+ * @param ctx - 服务齐备的宿主上下文。
+ * @param sessionId - 目标会话。
+ * @param options - `{ quarantineDir, trashMode }`。
+ * @returns 成功时的结果对象(mode / heldPath / disposed / detached / announced / message)。
+ * @throws 业务错误(message 可直接回给客户端)或系统错误(带 code,按系统错误处理)。
+ */
+async function purgeSession(ctx, sessionId, options) {
+  const { quarantineDir, trashMode } = options
+  const target = await resolveDeleteTarget(ctx, sessionId)
+  if (target.error !== undefined) throw new Error(target.error)
+  const { header, artifactDir, artifactExists } = target
+
+  // 产物处置:purge 直接永久删除;recycle 优先系统回收站,不可用时降级回收区。
+  // 产物已被删过(幽灵行)时跳过处置,只做列表收尾。
+  let mode = artifactExists ? undefined : 'ghost'
+  let heldPath
+  let disposed = { agent: false, session: false }
+  if (artifactExists && trashMode === 'recycle') {
+    mode = 'recycle'
+    try {
+      await executor.trashPath(artifactDir)
+    } catch (trashError) {
+      ctx.logger && ctx.logger.warn(`${NS} 系统回收站不可用(${sessionId}),尝试回收区降级: ` + String(trashError))
+      try {
+        heldPath = await executor.moveToQuarantine(artifactDir, quarantineDir)
+        mode = 'quarantine'
+      } catch (heldError) {
+        throw new Error(`${MESSAGES.trashFailed}: ` + String((heldError && heldError.message) || heldError))
+      }
+    }
+  } else if (artifactExists) {
+    mode = 'purge'
+    try {
+      await executor.purgePath(artifactDir)
+    } catch (purgeError) {
+      // Windows 上会话日志可能仍被宿主进程的写句柄占用:先摘掉运行时实例
+      // (agent/session)让它释放写入,再重试一次永久删除。
+      ctx.logger && ctx.logger.warn(`${NS} 永久删除失败(${sessionId}),先摘运行时实例后重试: ` + String(purgeError))
+      disposed = mergeDisposed(disposed, disposeLiveInstances(ctx, sessionId))
+      await delay(300)
+      try {
+        await executor.purgePath(artifactDir)
+      } catch (retryError) {
+        ctx.logger && ctx.logger.warn(`${NS} 重试永久删除仍失败(${sessionId}): ` + String(retryError))
+        try {
+          heldPath = await executor.moveToQuarantine(artifactDir, quarantineDir)
+          mode = 'quarantine'
+        } catch (heldError) {
+          ctx.logger && ctx.logger.warn(`${NS} 回收区降级亦失败(${sessionId}): ` + String(heldError))
+          throw new Error(MESSAGES.purgedLocked)
+        }
+      }
+    }
+  }
+
+  // 关键收尾:产物没了还不够——宿主 session.list 以 live 优先,内存里的
+  // Session/Agent 实例会让该行继续以「未分组」残留。这里按官方自身的
+  // detach 路径把它们摘掉(幂等),并触发 session/disposed → 客户端移除该行。
+  disposed = mergeDisposed(disposed, disposeLiveInstances(ctx, sessionId))
+
+  const detachErrors = await detachSession(ctx, sessionId, header)
+  if (detachErrors.length > 0) {
+    ctx.logger && ctx.logger.warn(`${NS} 解绑工作区失败(${sessionId}): ` + summarizeDetachErrors(detachErrors))
+  }
+  try {
+    await removeArchivedId(ctx, sessionId)
+  } catch (error) {
+    ctx.logger && ctx.logger.warn(`${NS} 归档集合清理失败(${sessionId}): ` + String((error && error.stack) || error))
+  }
+  // 冷会话没有内存实例可摘,官方那条 session/disposed 不会发;这里补发
+  // api-session/removed,客户端立刻掉行(否则会留一行点开就 not-found 的幽灵)。
+  const announced = announceRemoval(ctx, sessionId)
+
+  return {
+    mode,
+    ...(heldPath === undefined ? {} : { heldPath }),
+    disposed,
+    detached: detachErrors.length === 0,
+    announced,
+    ...(mode === 'ghost' ? { message: MESSAGES.ghostCleanup } : {}),
+    ...(detachErrors.length === 0 ? {} : { message: MESSAGES.detachFailed }),
+  }
+}
+
+/** 系统级错误(带 code)只回通用文案;业务错误原样回给客户端。 */
+export function describeError(error) {
+  const isSystem = Boolean(error && typeof error.code === 'string' && error.code !== '')
+  if (isSystem) return MESSAGES.systemError
+  return (error && error.message) ? String(error.message) : String(error)
+}
+
+/** 会话清单(批删选择器用):标题 / 时间 / 运行中 / 日志是否还在。 */
+async function listSessionRows(ctx, limit) {
+  const query = ctx.get('sessionQuery')
+  if (!query || typeof query.listSessions !== 'function') throw new Error(MESSAGES.unknownSession)
+  const records = await query.listSessions()
+  const agents = ctx.get('agents')
+  const persistence = ctx.get('sessionPersistence')
+  const slice = records.slice(0, limit)
+
+  // 标题是日志里 fold 出来的(SessionHeader 不带标题):官方提供批量折叠入口,一次读完。
+  const titles = new Map()
+  if (typeof query.readTitleSnapshots === 'function' && slice.length > 0) {
+    try {
+      const observations = await query.readTitleSnapshots(slice.map((record) => String(record.header.id)))
+      for (const observation of observations) {
+        if (observation && observation.status === 'fulfilled' && observation.value && observation.value.title) {
+          titles.set(String(observation.sessionId), String(observation.value.title.title))
+        }
+      }
+    } catch (error) {
+      ctx.logger && ctx.logger.warn(`${NS} 读取会话标题失败(清单仍可用): ` + String((error && error.message) || error))
+    }
+  }
+
+  const sessions = []
+  for (const record of slice) {
+    const sessionId = String(record.header.id)
+    const running = isSessionRunning(agents, sessionId)
+    const artifactDir = artifactDirectoryOf(persistence, record.header)
+    let artifactExists = false
+    if (artifactDir !== undefined) {
+      try {
+        artifactExists = (await stat(artifactDir)).isDirectory()
+      } catch (error) {
+        if (!error || error.code !== 'ENOENT') throw error
+      }
+    }
+    sessions.push({
+      sessionId,
+      title: titles.get(sessionId) ?? '',
+      createdAt: record.header.createdAt,
+      cwd: record.header.cwd,
+      live: record.live === true,
+      persisted: record.persisted === true,
+      running,
+      artifactKnown: artifactDir !== undefined,
+      artifactExists,
+      deletable: !running,
+      ...(running ? { reason: MESSAGES.running } : {}),
+    })
+  }
+  return { total: records.length, returned: sessions.length, sessions }
+}
+
+/**
  * 摘掉宿主内存里的运行时实例(agent 先、session 后),让官方 session.list 不再
  * 以 live 优先返回该会话,并触发 session/disposed → api-session/removed,
  * 客户端列表行随即消失。
@@ -410,87 +570,8 @@ function installRoutes(ctx, options) {
       }
       inFlight.add(sessionId)
       try {
-        const target = await resolveDeleteTarget(ctx, sessionId)
-        if (target.error !== undefined) {
-          sendJson(res, 400, { error: target.error })
-          return
-        }
-        const { header, artifactDir, artifactExists } = target
-
-        // 产物处置:purge 直接永久删除;recycle 优先系统回收站,不可用时降级回收区。
-        // 产物已被删过(幽灵行)时跳过处置,只做列表收尾。
-        let mode = artifactExists ? undefined : 'ghost'
-        let heldPath
-        let disposed = { agent: false, session: false }
-        if (artifactExists && trashMode === 'recycle') {
-          mode = 'recycle'
-          try {
-            await executor.trashPath(artifactDir)
-          } catch (trashError) {
-            ctx.logger && ctx.logger.warn(`${NS} 系统回收站不可用(${sessionId}),尝试回收区降级: ` + String(trashError))
-            try {
-              heldPath = await executor.moveToQuarantine(artifactDir, quarantineDir)
-              mode = 'quarantine'
-            } catch (heldError) {
-              sendJson(res, 400, { error: `${MESSAGES.trashFailed}: ` + String((heldError && heldError.message) || heldError) })
-              return
-            }
-          }
-        } else if (artifactExists) {
-          mode = 'purge'
-          try {
-            await executor.purgePath(artifactDir)
-          } catch (purgeError) {
-            // Windows 上会话日志可能仍被宿主进程的写句柄占用:先摘掉运行时实例
-            // (agent/session)让它释放写入,再重试一次永久删除。
-            ctx.logger && ctx.logger.warn(`${NS} 永久删除失败(${sessionId}),先摘运行时实例后重试: ` + String(purgeError))
-            disposed = mergeDisposed(disposed, disposeLiveInstances(ctx, sessionId))
-            await delay(300)
-            try {
-              await executor.purgePath(artifactDir)
-            } catch (retryError) {
-              ctx.logger && ctx.logger.warn(`${NS} 重试永久删除仍失败(${sessionId}): ` + String(retryError))
-              try {
-                heldPath = await executor.moveToQuarantine(artifactDir, quarantineDir)
-                mode = 'quarantine'
-              } catch (heldError) {
-                ctx.logger && ctx.logger.warn(`${NS} 回收区降级亦失败(${sessionId}): ` + String(heldError))
-                sendJson(res, 400, { error: MESSAGES.purgedLocked })
-                return
-              }
-            }
-          }
-        }
-
-        // 关键收尾:产物没了还不够——宿主 session.list 以 live 优先,内存里的
-        // Session/Agent 实例会让该行继续以「未分组」残留。这里按官方自身的
-        // detach 路径把它们摘掉(幂等),并触发 session/disposed → 客户端移除该行。
-        disposed = mergeDisposed(disposed, disposeLiveInstances(ctx, sessionId))
-
-        const detachErrors = await detachSession(ctx, sessionId, header)
-        if (detachErrors.length > 0) {
-          ctx.logger && ctx.logger.warn(`${NS} 解绑工作区失败(${sessionId}): ` + summarizeDetachErrors(detachErrors))
-        }
-        try {
-          await removeArchivedId(ctx, sessionId)
-        } catch (error) {
-          ctx.logger && ctx.logger.warn(`${NS} 归档集合清理失败(${sessionId}): ` + String((error && error.stack) || error))
-        }
-        // 冷会话没有内存实例可摘,官方那条 session/disposed 不会发;这里补发
-        // api-session/removed,客户端立刻掉行(否则会留一行点开就 not-found 的幽灵)。
-        const announced = announceRemoval(ctx, sessionId)
-
-        sendJson(res, 200, {
-          ok: true,
-          sessionId,
-          mode,
-          ...(heldPath === undefined ? {} : { heldPath }),
-          disposed,
-          detached: detachErrors.length === 0,
-          announced,
-          ...(mode === 'ghost' ? { message: MESSAGES.ghostCleanup } : {}),
-          ...(detachErrors.length === 0 ? {} : { message: MESSAGES.detachFailed }),
-        })
+        const result = await purgeSession(ctx, sessionId, { quarantineDir, trashMode })
+        sendJson(res, 200, { ok: true, sessionId, ...result })
       } catch (error) {
         respondError(ctx, res, error)
       } finally {
@@ -498,6 +579,90 @@ function installRoutes(ctx, options) {
       }
     },
   }), `${NS}: delete route`)
+
+  // ---- 会话清单(批量删除的选择器数据源)----
+  //
+  // 走官方 sessionQuery.listSessions(SessionHeader 本身不带标题,标题用官方批量折叠
+  // 入口 readTitleSnapshots 取),再补齐「运行中 / 日志是否还在」两个删除相关的判定。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_SESSIONS,
+    handler: async (req, res) => {
+      if (!requireMethod(req, res, 'GET')) return
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const requested = Number(url.searchParams.get('limit'))
+        const limit = Number.isFinite(requested) && requested > 0
+          ? Math.min(Math.trunc(requested), LIST_LIMIT_MAX)
+          : LIST_LIMIT_DEFAULT
+        sendJson(res, 200, await listSessionRows(ctx, limit))
+      } catch (error) {
+        respondError(ctx, res, error)
+      }
+    },
+  }), `${NS}: sessions route`)
+
+  // ---- 批量删除 ----
+  //
+  // 逐条走与单删完全相同的 purgeSession 管线(顺序执行,避免同时处置多个产物目录),
+  // 逐条汇报结果:运行中的会话由核心拒绝并被记为失败项,其余照常删除。
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: ROUTE_DELETE_MANY,
+    handler: async (req, res) => {
+      if (!requireMethod(req, res, 'POST')) return
+      let ids
+      try {
+        const body = await readJsonBody(req)
+        const raw = Array.isArray(body.sessionIds) ? body.sessionIds : []
+        ids = [...new Set(raw.filter((id) => typeof id === 'string' && id !== ''))]
+        if (ids.length === 0) {
+          sendJson(res, 400, { error: MESSAGES.bulkEmpty })
+          return
+        }
+        if (body.confirm !== true) {
+          sendJson(res, 400, { error: MESSAGES.missingConfirm })
+          return
+        }
+        if (ids.length > BULK_DELETE_MAX) {
+          sendJson(res, 400, { error: MESSAGES.bulkTooMany })
+          return
+        }
+      } catch (error) {
+        respondError(ctx, res, error)
+        return
+      }
+
+      const results = []
+      for (const sessionId of ids) {
+        if (inFlight.has(sessionId)) {
+          results.push({ sessionId, ok: false, error: MESSAGES.inFlight })
+          continue
+        }
+        inFlight.add(sessionId)
+        try {
+          const result = await purgeSession(ctx, sessionId, { quarantineDir, trashMode })
+          results.push({ sessionId, ok: true, ...result })
+        } catch (error) {
+          if (error && typeof error.code === 'string' && error.code !== '') {
+            ctx.logger && ctx.logger.warn(`${NS} 批量删除系统级错误(${sessionId}): ` + String((error && error.stack) || error))
+          }
+          results.push({ sessionId, ok: false, error: describeError(error) })
+        } finally {
+          inFlight.delete(sessionId)
+        }
+      }
+
+      const deleted = results.filter((item) => item.ok === true).length
+      sendJson(res, 200, {
+        ok: results.every((item) => item.ok === true),
+        total: results.length,
+        deleted,
+        failed: results.length - deleted,
+        results,
+      })
+    },
+  }), `${NS}: delete-many route`)
 
   // ---- 失效行清理(幽灵行) ----
   //

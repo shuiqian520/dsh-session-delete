@@ -45,7 +45,7 @@ function makeRes() {
  * 在临时根目录下搭一座最小宿主:产物目录、工作区账本、会话头。
  * @returns 路由、桩记录与清理函数。
  */
-async function bootstrap({ config = {}, headers = {}, running = [], detachThrows = [], events = [], withController = true, ghostIds = [] } = {}) {
+async function bootstrap({ config = {}, headers = {}, running = [], detachThrows = [], events = [], withController = true, ghostIds = [], titles = {} } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-session-delete-'))
   const artifactDirOf = (id) => join(dir, id)
   for (const id of Object.keys(headers)) {
@@ -124,6 +124,17 @@ async function bootstrap({ config = {}, headers = {}, running = [], detachThrows
         return {
           listSessions: async () => Object.entries(headers).map(([id, header]) => ({ header: { id, ...header }, live: false, persisted: true })),
           readSession: async () => ({ session: { id: 'session-2' }, inheritedEventCount: 0, events: eventState.events }),
+          // 官方批量标题折叠入口:标题来自日志(SessionHeader 本身不带标题)
+          readTitleSnapshots: async (ids) => ids.map((sessionId) => ({
+            sessionId,
+            status: 'fulfilled',
+            value: {
+              session: { id: sessionId },
+              title: titles[sessionId] === undefined
+                ? undefined
+                : { title: titles[sessionId], eventSeq: 1, updatedAt: 1, messageSeqs: [], source: { kind: 'user' } },
+            },
+          })),
         }
       }
       if (name === 'workspaceRegistry') return { list: () => workspaces, archivedSessionIds: [] }
@@ -145,6 +156,8 @@ async function bootstrap({ config = {}, headers = {}, running = [], detachThrows
   const statusRoute = routes.find((route) => route.path === '/api/session-delete/status')
   const deleteRoute = routes.find((route) => route.path === '/api/session-delete/delete')
   const sweepRoute = routes.find((route) => route.path === '/api/session-delete/sweep')
+  const sessionsRoute = routes.find((route) => route.path === '/api/session-delete/sessions')
+  const deleteManyRoute = routes.find((route) => route.path === '/api/session-delete/delete-many')
   const retrySourceRoute = routes.find((route) => route.path === '/api/session-delete/retry-source')
   const retryRoute = routes.find((route) => route.path === '/api/session-delete/retry')
   return {
@@ -153,6 +166,8 @@ async function bootstrap({ config = {}, headers = {}, running = [], detachThrows
     statusRoute,
     deleteRoute,
     sweepRoute,
+    sessionsRoute,
+    deleteManyRoute,
     retrySourceRoute,
     retryRoute,
     artifactDirOf,
@@ -208,7 +223,7 @@ test('软注入:服务缺失时 apply 不抛错且不注册路由', () => {
   assert.doesNotThrow(() => host.apply(bare, {}))
 })
 
-test('软注入:服务齐备时注册四条路由', () => {
+test('软注入:服务齐备时注册六条路由', () => {
   const routes = []
   const ctx = {
     logger: { warn() {} },
@@ -226,7 +241,9 @@ test('软注入:服务齐备时注册四条路由', () => {
   host.apply(ctx, {})
   assert.deepEqual(routes.map((route) => route.path).sort(), [
     '/api/session-delete/delete',
+    '/api/session-delete/delete-many',
     '/api/session-delete/retry-source',
+    '/api/session-delete/sessions',
     '/api/session-delete/status',
     '/api/session-delete/sweep',
   ])
@@ -673,7 +690,8 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
 
   // 最小 DOM 桩:证明 apply() 在没有真实 DOM 的环境里也能安全挂载/卸载
   const created = []
-  const appendChild = () => {}
+  const styles = []
+  const appendChild = (node) => styles.push(node)
   globalThis.document = {
     head: { appendChild },
     body: {},
@@ -775,30 +793,42 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
       register: (options, component) => ({ options, component }),
     },
   }
-  // retryByMessageId 会先打 host 只读路由解析文本
-  globalThis.fetch = async (url) => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ role: 'assistant', text: '帮我看看这个 bug', mode: 'queue', url: String(url) }),
-  })
+  // retryByMessageId 会先打 host 只读路由解析文本;批量删除页打清单/批删两条路由
+  const deleteManyCalls = []
+  const respond = (payload, ok = true, status = 200) => ({ ok, status, json: async () => payload })
+  globalThis.fetch = async (url, init) => {
+    const target = String(url)
+    if (target.includes('/api/session-delete/sessions')) {
+      return respond({ total: 1, returned: 1, sessions: [{ sessionId: 'session-2', title: '标题', deletable: true }] })
+    }
+    if (target.includes('/api/session-delete/delete-many')) {
+      deleteManyCalls.push(JSON.parse(init.body))
+      return respond({ ok: true, total: 2, deleted: 2, failed: 0, results: [] })
+    }
+    return respond({ role: 'assistant', text: '帮我看看这个 bug', mode: 'queue', url: target })
+  }
   clientExports.apply(clientCtx)
   assert.deepEqual(injections.map((entry) => entry.key), [
     'sidebar.workspaces.session.menu.item',
     'shell.overlay',
     'conversation.chat.assistant-actions',
+    'settings.section',
   ])
   const registrations = injections.map((entry) => entry.callback())
   assert.deepEqual(registrations.map((entry) => entry.options.id), [
     'dsh-session-delete.delete-session',
     'dsh-session-delete.overlay',
     'dsh-session-delete.retry-assistant',
+    'dsh-session-delete.bulk-delete',
   ])
   assert.equal(registrations[0].options.order, 900)
   // 「重试」排在官方反馈(10)之后,位于复制按钮右侧的同一条 action 行
   assert.equal(registrations[2].options.order, 20)
-  assert.equal(typeof registrations[0].component, 'function')
-  assert.equal(typeof registrations[1].component, 'function')
-  assert.equal(typeof registrations[2].component, 'function')
+  // 批量删除是一个设置页,nav 文案用 thunk(切语言后官方重读,不需要重新注册)
+  assert.equal(registrations[3].options.order, 60)
+  assert.equal(typeof registrations[3].options.label, 'function')
+  assert.equal(registrations[3].options.label(), '批量删除会话')
+  for (const registration of registrations) assert.equal(typeof registration.component, 'function')
   const injected = registrations[0].options.inject()
   assert.equal(typeof injected.actions.ask, 'function')
   assert.equal(typeof injected.actions.settle, 'function')
@@ -806,6 +836,8 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   assert.equal(typeof injected.useDeleteStore, 'function')
   assert.equal(typeof injected.retryByText, 'function')
   assert.equal(typeof injected.retryByMessageId, 'function')
+  assert.equal(typeof injected.loadSessionRows, 'function')
+  assert.equal(typeof injected.deleteMany, 'function')
 
   // 用户消息行重试:文本走客户端会话绑定投递(和输入框发送同一条路)
   await injected.retryByText('session-2', '  帮我看看这个 bug  ')
@@ -828,8 +860,18 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   await assert.rejects(() => injected.retryByText('session-2', '   '), /没有可重发/)
   assert.equal(sent.length, 2)
 
-  // 用户消息按钮:注册了一个挂载 effect(DOM 注入),卸载时不抛错
-  assert.equal(effects.length, 1)
+  // 批量删除页:清单来自 host,提交时带 confirm 标记
+  const rows = await injected.loadSessionRows()
+  assert.deepEqual(rows, [{ sessionId: 'session-2', title: '标题', deletable: true }])
+  const outcome = await injected.deleteMany(['session-2', 'session-3'])
+  assert.equal(outcome.deleted, 2)
+  assert.deepEqual(deleteManyCalls[0], { sessionIds: ['session-2', 'session-3'], confirm: true })
+  await assert.rejects(() => injected.deleteMany([]), /没有选中/)
+
+  // 两个挂载 effect:批量页样式 + 用户消息按钮注入
+  assert.equal(effects.length, 2)
+  assert.equal(styles.length, 2)
+  assert.match(styles.map((node) => node.textContent).join(''), /dsh-session-delete-bulk-row/)
   assert.equal(created.length > 0, true)
 })
 
@@ -929,4 +971,145 @@ test('client 半区:可见文案注册进 locale 服务,服务缺席回退 zh', 
   // 3) 切回 zh:同一个翻译函数按当前语言取词(引用稳定,读取在调用时)
   active = 'zh'
   await assert.rejects(() => englishFace.retryByText('s', '   '), /没有可重发的文本内容/)
+})
+
+test('sessions 路由:清单含标题 / 运行中 / 日志缺失标记,并按 limit 截断', async () => {
+  const h = await bootstrap({
+    headers: HEADERS,
+    running: ['session-1'],
+    titles: { 'session-1': '第一个会话', 'session-2': '第二个会话' },
+  })
+  try {
+    // session-2 的产物先删掉:它是「日志已不存在」的幽灵行
+    await rm(h.artifactDirOf('session-2'), { recursive: true, force: true })
+
+    const res = makeRes()
+    await h.sessionsRoute.handler(makeReq('GET', '/api/session-delete/sessions'), res)
+    const payload = JSON.parse(res.body)
+    assert.equal(res.status, 200, res.body)
+    assert.equal(payload.total, 2)
+    assert.equal(payload.returned, 2)
+    const byId = Object.fromEntries(payload.sessions.map((row) => [row.sessionId, row]))
+    assert.equal(byId['session-1'].title, '第一个会话')
+    assert.equal(byId['session-1'].running, true)
+    assert.equal(byId['session-1'].deletable, false)
+    assert.match(byId['session-1'].reason, /正在运行/)
+    assert.equal(byId['session-2'].title, '第二个会话')
+    assert.equal(byId['session-2'].running, false)
+    assert.equal(byId['session-2'].artifactExists, false)
+    assert.equal(byId['session-2'].deletable, true)
+    assert.equal(byId['session-2'].reason, undefined)
+    assert.equal(typeof byId['session-1'].createdAt, 'number')
+
+    {
+      const limited = makeRes()
+      await h.sessionsRoute.handler(makeReq('GET', '/api/session-delete/sessions?limit=1'), limited)
+      const page = JSON.parse(limited.body)
+      assert.equal(page.total, 2)
+      assert.equal(page.returned, 1)
+    }
+    {
+      const wrongMethod = makeRes()
+      await h.sessionsRoute.handler(makeReq('POST', '/api/session-delete/sessions'), wrongMethod)
+      assert.equal(wrongMethod.status, 405)
+    }
+  } finally {
+    await h.dispose()
+  }
+})
+
+test('delete-many 路由:空列表 / 缺确认标记 / 超上限都被拒', async () => {
+  const h = await bootstrap({ headers: HEADERS })
+  try {
+    const cases = [
+      [{ sessionIds: [], confirm: true }, /没有要删除/],
+      [{ sessionIds: ['session-2'] }, /确认/],
+      [{ sessionIds: Array.from({ length: 201 }, (_, index) => `s-${index}`), confirm: true }, /最多/],
+    ]
+    for (const [body, pattern] of cases) {
+      const req = makeReq('POST', '/api/session-delete/delete-many')
+      const res = makeRes()
+      const pending = h.deleteManyRoute.handler(req, res)
+      req.emitBody(JSON.stringify(body))
+      await pending
+      assert.equal(res.status, 400, res.body)
+      assert.match(JSON.parse(res.body).error, pattern)
+    }
+    assert.deepEqual(h.calls.purged, [])
+  } finally {
+    await h.dispose()
+  }
+})
+
+test('delete-many 路由:逐个删除 + 去重 + 幽灵行走列表清理', async () => {
+  const h = await bootstrap({
+    headers: {
+      'session-1': { createdAt: 1, cwd: 'C:\\ws', isSeeded: false },
+      'session-2': { createdAt: 2, cwd: 'C:\\ws', isSeeded: false },
+      'session-3': { createdAt: 3, cwd: 'C:\\ws', isSeeded: false },
+    },
+  })
+  try {
+    // session-3 的产物先删掉 → 走 ghost 分支;session-2 正常 purge
+    await rm(h.artifactDirOf('session-3'), { recursive: true, force: true })
+
+    const req = makeReq('POST', '/api/session-delete/delete-many')
+    const res = makeRes()
+    const pending = h.deleteManyRoute.handler(req, res)
+    // 故意重复一个 id:应被去重
+    req.emitBody(JSON.stringify({ sessionIds: ['session-2', 'session-3', 'session-2'], confirm: true }))
+    await pending
+    const payload = JSON.parse(res.body)
+    assert.equal(res.status, 200, res.body)
+    assert.equal(payload.ok, true)
+    assert.equal(payload.total, 2)
+    assert.equal(payload.deleted, 2)
+    assert.equal(payload.failed, 0)
+
+    const byId = Object.fromEntries(payload.results.map((item) => [item.sessionId, item]))
+    assert.equal(byId['session-2'].mode, 'purge')
+    assert.equal(byId['session-3'].mode, 'ghost')
+    assert.equal(byId['session-3'].message !== undefined, true)
+
+    // 产物真的没了;工作区解绑;官方移除通知逐个发出
+    await assert.rejects(readdir(h.artifactDirOf('session-2')))
+    assert.deepEqual(h.calls.purged, [h.artifactDirOf('session-2')])
+    assert.deepEqual(h.calls.detached.sort(), ['session-2', 'session-3'])
+    assert.deepEqual(h.calls.emitted.map((item) => item.payload).sort(), ['session-2', 'session-3'])
+    assert.equal(h.calls.emitted.every((item) => item.event === 'api-session/removed'), true)
+  } finally {
+    await h.dispose()
+  }
+})
+
+test('delete-many 路由:运行中的会话被拒并记为失败项,其余照常删除', async () => {
+  const h = await bootstrap({
+    headers: {
+      'session-1': { createdAt: 1, cwd: 'C:\\ws', isSeeded: false },
+      'session-2': { createdAt: 2, cwd: 'C:\\ws', isSeeded: false },
+    },
+    running: ['session-1'],
+  })
+  try {
+    const req = makeReq('POST', '/api/session-delete/delete-many')
+    const res = makeRes()
+    const pending = h.deleteManyRoute.handler(req, res)
+    req.emitBody(JSON.stringify({ sessionIds: ['session-1', 'session-2'], confirm: true }))
+    await pending
+    const payload = JSON.parse(res.body)
+    assert.equal(res.status, 200, res.body)
+    assert.equal(payload.ok, false)
+    assert.equal(payload.total, 2)
+    assert.equal(payload.deleted, 1)
+    assert.equal(payload.failed, 1)
+    const byId = Object.fromEntries(payload.results.map((item) => [item.sessionId, item]))
+    assert.equal(byId['session-1'].ok, false)
+    assert.match(byId['session-1'].error, /正在运行/)
+    assert.equal(byId['session-2'].ok, true)
+    // 运行中的那个连产物都不该动
+    assert.deepEqual(await readdir(h.artifactDirOf('session-1')), ['session.jsonl.zstd'])
+    await assert.rejects(readdir(h.artifactDirOf('session-2')))
+  } finally {
+    await h.dispose()
+  }
 })

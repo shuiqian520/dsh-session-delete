@@ -30,6 +30,8 @@ window.__ModuleLoader__.load({
 
     const NS = "dsh-session-delete";
     const MENU_ORDER = 900;
+    /** 设置页里的位置:排在官方与常见插件之后,做一个"维护工具"该待的位置。 */
+    const BULK_SECTION_ORDER = 60;
     const TOAST_MS = 3200;
 
     const inject = ["slots"];
@@ -64,6 +66,30 @@ window.__ModuleLoader__.load({
         deleteForever: "永久删除",
         bodyGhost: "该会话的产物已不存在,本次只把它从会话列表与工作区中彻底清除。",
         bodyPurge: "该会话的日志与记录会被永久删除,无法恢复;保存在该会话上的数据也会一并消失。",
+        bulkNavLabel: "批量删除会话",
+        bulkTitle: "批量删除会话",
+        bulkIntro: "勾选要永久删除的会话。运行中的会话不能删除,会显示为不可选。",
+        bulkFilter: "筛选标题或会话 id…",
+        bulkSelectAll: "全选可删除的",
+        bulkClear: "清除选择",
+        bulkRefresh: "刷新",
+        bulkCount: "共 {total} 个会话,可删除 {deletable} 个",
+        bulkSelected: "已选 {count} 个",
+        bulkEmpty: "没有符合条件的会话",
+        bulkNothingSelected: "没有选中任何会话",
+        bulkLoading: "正在读取会话…",
+        bulkLoadFailed: "读取会话列表失败:{message}",
+        bulkRunning: "运行中",
+        bulkArtifactGone: "日志已不存在",
+        bulkNoTitle: "(无标题会话)",
+        bulkDeleteButton: "删除选中的 {count} 个会话",
+        bulkConfirmTitle: "永久删除 {count} 个会话",
+        bulkConfirmBody: "这些会话的日志与记录会被永久删除,无法恢复;保存在它们上面的数据也会一并消失。",
+        bulkConfirmMore: "……等共 {count} 个",
+        bulkWorking: "正在删除…",
+        bulkResult: "已删除 {deleted} 个会话",
+        bulkResultSkipped: ",{failed} 个未删除",
+        bulkCapNote: "一次最多 200 个,超出请分批。",
       },
       en: {
         statusReading: "Reading session state",
@@ -90,6 +116,30 @@ window.__ModuleLoader__.load({
         deleteForever: "Delete permanently",
         bodyGhost: "The session log no longer exists; this only removes it from the session list and workspace.",
         bodyPurge: "The session log and records are deleted permanently and cannot be recovered; data stored on this session disappears too.",
+        bulkNavLabel: "Bulk delete sessions",
+        bulkTitle: "Bulk delete sessions",
+        bulkIntro: "Tick the sessions to delete permanently. A running session cannot be deleted and is shown as unselectable.",
+        bulkFilter: "Filter by title or session id…",
+        bulkSelectAll: "Select all deletable",
+        bulkClear: "Clear selection",
+        bulkRefresh: "Refresh",
+        bulkCount: "{total} sessions, {deletable} deletable",
+        bulkSelected: "{count} selected",
+        bulkEmpty: "No sessions match",
+        bulkNothingSelected: "No sessions selected",
+        bulkLoading: "Loading sessions…",
+        bulkLoadFailed: "Could not load the session list: {message}",
+        bulkRunning: "running",
+        bulkArtifactGone: "log already gone",
+        bulkNoTitle: "(untitled session)",
+        bulkDeleteButton: "Delete {count} selected sessions",
+        bulkConfirmTitle: "Permanently delete {count} sessions",
+        bulkConfirmBody: "Their logs and records are deleted permanently and cannot be recovered; data stored on them disappears too.",
+        bulkConfirmMore: "…and {count} in total",
+        bulkWorking: "Deleting…",
+        bulkResult: "Deleted {deleted} sessions",
+        bulkResultSkipped: ", {failed} not deleted",
+        bulkCapNote: "Up to 200 at a time.",
       },
     };
     const FALLBACK_LOCALE = "zh";
@@ -355,6 +405,42 @@ window.__ModuleLoader__.load({
         await sendRetry(sessionId, trimmed);
       }
 
+      /** 批量删除页的数据源:host 用官方 sessionQuery 列出的会话清单。 */
+      async function loadSessionRows() {
+        const response = await fetch("/api/session-delete/sessions", { headers: { accept: "application/json" } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload && payload.error ? String(payload.error) : `HTTP ${response.status}`);
+        }
+        return Array.isArray(payload.sessions) ? payload.sessions : [];
+      }
+
+      /** 批量删除:请求体带 confirm,host 逐条执行并逐条汇报。 */
+      async function deleteMany(sessionIds) {
+        const ids = Array.isArray(sessionIds) ? sessionIds.map(String).filter((id) => id !== "") : [];
+        if (ids.length === 0) throw new Error(t("bulkNothingSelected"));
+        const response = await fetch("/api/session-delete/delete-many", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ sessionIds: ids, confirm: true }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload && payload.error ? String(payload.error) : `HTTP ${response.status}`);
+        }
+        return payload;
+      }
+
+      /** 时间戳 → 本地可读时间(浏览器 locale)。 */
+      function formatTime(value) {
+        if (typeof value !== "number" || !Number.isFinite(value)) return "";
+        try {
+          return new Date(value).toLocaleString();
+        } catch {
+          return new Date(value).toISOString();
+        }
+      }
+
       const refreshIcon = (size) => React.createElement("svg", {
         width: size,
         height: size,
@@ -395,6 +481,214 @@ window.__ModuleLoader__.load({
           disabled: busy,
           onClick,
         }, refreshIcon(16));
+      }
+
+      // ---- 批量删除(官方 settings.section 承载的多选页)-------------------------
+
+      const bulkStyles = {
+        root: { display: "flex", flexDirection: "column", gap: 12, maxWidth: 760 },
+        title: { margin: 0, fontSize: 15, fontWeight: 600, color: "var(--dsw-alias-label-primary)" },
+        intro: { margin: 0, fontSize: 12, lineHeight: "18px", color: "var(--dsw-alias-label-caption)" },
+        toolbar: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" },
+        input: {
+          flex: "1 1 200px",
+          minWidth: 0,
+          padding: "4px 8px",
+          borderRadius: 6,
+          border: "1px solid var(--dsw-alias-border-l3)",
+          background: "transparent",
+          color: "var(--dsw-alias-label-primary)",
+          font: "inherit",
+        },
+        list: { maxHeight: 380, overflowY: "auto", border: "1px solid var(--dsw-alias-border-l3)", borderRadius: 8 },
+        rowTitle: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+        meta: { flex: "0 0 auto", fontSize: 12, color: "var(--dsw-alias-label-caption)" },
+        footer: { display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" },
+        note: { fontSize: 12, color: "var(--dsw-alias-label-caption)" },
+      };
+
+      /** 批量删除页:清单来自 host,运行中的会话不可勾选。 */
+      function BulkDeleteSection(props) {
+        const { actions: act } = props;
+        useLocaleRevision();
+        const stateValue = React.useState({ phase: "loading", rows: [], error: null });
+        const view = stateValue[0];
+        const setView = stateValue[1];
+        const selectionValue = React.useState(() => new Set());
+        const selected = selectionValue[0];
+        const setSelected = selectionValue[1];
+        const filterValue = React.useState("");
+        const filter = filterValue[0];
+        const setFilter = filterValue[1];
+        const busyValue = React.useState(false);
+        const busy = busyValue[0];
+        const setBusy = busyValue[1];
+        const confirmValue = React.useState(null);
+        const confirming = confirmValue[0];
+        const setConfirming = confirmValue[1];
+
+        const reload = React.useCallback(() => {
+          setView((current) => (current.rows.length === 0
+            ? { phase: "loading", rows: [], error: null }
+            : { ...current, error: null }));
+          loadSessionRows().then(
+            (rows) => setView({ phase: "ready", rows, error: null }),
+            (error) => setView({ phase: "error", rows: [], error: error && error.message ? error.message : String(error) }),
+          );
+        }, []);
+
+        React.useEffect(() => {
+          reload();
+        }, [reload]);
+
+        const rows = view.rows;
+        const needle = filter.trim().toLowerCase();
+        const visible = needle === ""
+          ? rows
+          : rows.filter((row) => String(row.title ?? "").toLowerCase().includes(needle)
+            || String(row.sessionId ?? "").toLowerCase().includes(needle));
+        const deletableVisible = visible.filter((row) => row.deletable !== false);
+        const selectedIds = [...selected].filter((id) => rows.some((row) => row.sessionId === id && row.deletable !== false));
+
+        const toggle = (sessionId) => {
+          if (busy) return;
+          setSelected((current) => {
+            const next = new Set(current);
+            if (next.has(sessionId)) next.delete(sessionId);
+            else next.add(sessionId);
+            return next;
+          });
+        };
+        const selectAll = () => {
+          if (busy) return;
+          setSelected(new Set(deletableVisible.map((row) => row.sessionId)));
+        };
+        const clearAll = () => {
+          if (busy) return;
+          setSelected(new Set());
+        };
+
+        const runDelete = (ids) => {
+          setBusy(true);
+          deleteMany(ids).then((payload) => {
+            const deleted = typeof payload.deleted === "number" ? payload.deleted : ids.length;
+            const failed = typeof payload.failed === "number" ? payload.failed : 0;
+            const message = t("bulkResult", { deleted })
+              + (failed > 0 ? t("bulkResultSkipped", { failed }) : "");
+            setBusy(false);
+            setConfirming(null);
+            setSelected(new Set());
+            act.settle(message);
+            reload();
+          }).catch((error) => {
+            setBusy(false);
+            act.notify(t("retryFailed", { message: error && error.message ? error.message : String(error) }));
+          });
+        };
+
+        const rowNode = (row) => {
+          const selectable = row.deletable !== false && !busy;
+          const meta = [
+            row.running ? t("bulkRunning") : null,
+            row.artifactExists === false ? t("bulkArtifactGone") : null,
+            formatTime(row.createdAt),
+          ].filter((part) => part !== null && part !== "").join(" · ");
+          return React.createElement("label", {
+            key: row.sessionId,
+            className: `${NS}-bulk-row`,
+            style: { opacity: row.deletable === false ? 0.55 : 1, cursor: selectable ? "pointer" : "default" },
+          }, [
+            React.createElement("input", {
+              key: "box",
+              type: "checkbox",
+              checked: selected.has(row.sessionId),
+              disabled: !selectable,
+              onChange: () => toggle(row.sessionId),
+            }),
+            React.createElement("span", {
+              key: "title",
+              style: bulkStyles.rowTitle,
+              title: row.title || row.sessionId,
+            }, row.title || t("bulkNoTitle")),
+            React.createElement("span", { key: "meta", style: bulkStyles.meta }, meta),
+          ]);
+        };
+
+        const confirmFooter = confirming === null ? null : React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Button, {
+            variant: "outline",
+            disabled: busy,
+            onClick: () => setConfirming(null),
+          }, t("cancel")),
+          React.createElement(Button, {
+            variant: "outline",
+            disabled: busy,
+            style: { color: "var(--dsw-alias-state-error-primary)" },
+            onClick: () => runDelete(confirming.ids),
+          }, busy ? t("bulkWorking") : t("deleteForever")),
+        );
+
+        return React.createElement("div", { style: bulkStyles.root }, [
+          React.createElement("h3", { key: "title", style: bulkStyles.title }, t("bulkTitle")),
+          React.createElement("p", { key: "intro", style: bulkStyles.intro }, t("bulkIntro")),
+          React.createElement("div", { key: "toolbar", style: bulkStyles.toolbar }, [
+            React.createElement("input", {
+              key: "filter",
+              type: "search",
+              value: filter,
+              placeholder: t("bulkFilter"),
+              "aria-label": t("bulkFilter"),
+              style: bulkStyles.input,
+              onChange: (event) => setFilter(event && event.target ? event.target.value : ""),
+            }),
+            React.createElement(Button, { key: "all", variant: "outline", disabled: busy || deletableVisible.length === 0, onClick: selectAll }, t("bulkSelectAll")),
+            React.createElement(Button, { key: "clear", variant: "outline", disabled: busy || selected.size === 0, onClick: clearAll }, t("bulkClear")),
+            React.createElement(Button, { key: "refresh", variant: "outline", disabled: busy, onClick: reload }, t("bulkRefresh")),
+          ]),
+          React.createElement("div", { key: "count", style: bulkStyles.note }, view.phase === "error"
+            ? t("bulkLoadFailed", { message: view.error ?? "" })
+            : t("bulkCount", {
+              total: rows.length,
+              deletable: rows.filter((row) => row.deletable !== false).length,
+            })),
+          React.createElement("div", { key: "list", style: bulkStyles.list },
+            view.phase === "loading" && rows.length === 0
+              ? React.createElement("div", { style: { padding: "8px 10px", ...bulkStyles.note } }, t("bulkLoading"))
+              : visible.length === 0
+                ? React.createElement("div", { style: { padding: "8px 10px", ...bulkStyles.note } }, t("bulkEmpty"))
+                : visible.map(rowNode)),
+          React.createElement("div", { key: "footer", style: bulkStyles.footer }, [
+            React.createElement(Button, {
+              key: "delete",
+              variant: "outline",
+              disabled: busy || selectedIds.length === 0,
+              style: { color: "var(--dsw-alias-state-error-primary)" },
+              onClick: () => setConfirming({ ids: selectedIds }),
+            }, t("bulkDeleteButton", { count: selectedIds.length })),
+            React.createElement("span", { key: "note", style: bulkStyles.note }, t("bulkCapNote")),
+          ]),
+          confirming === null ? null : React.createElement(Modal, {
+            key: "confirm",
+            open: true,
+            onClose: () => setConfirming(null),
+            closeLabel: t("modalClose"),
+            title: t("bulkConfirmTitle", { count: confirming.ids.length }),
+            description: confirming.ids.slice(0, 8).map((id) => {
+              const row = rows.find((item) => item.sessionId === id);
+              return (row && row.title) || id;
+            }).join("\n"),
+            footer: confirmFooter,
+            children: [
+              React.createElement("p", { key: "warn", style: { margin: 0 } }, t("bulkConfirmBody")),
+              confirming.ids.length > 8
+                ? React.createElement("p", { key: "more", style: { margin: "8px 0 0", color: "var(--dsw-alias-label-caption)" } },
+                  t("bulkConfirmMore", { count: confirming.ids.length }))
+                : null,
+            ],
+          }),
+        ]);
       }
 
       /** 当前主视图正在展示的会话 id(DOM 注入的用户消息按钮需要知道发给哪个会话)。 */
@@ -687,9 +981,12 @@ window.__ModuleLoader__.load({
         DeleteSessionMenuItem,
         DeleteOverlay,
         RetryAssistantAction,
+        BulkDeleteSection,
         mountUserRetryButtons,
         retryByMessageId,
         retryByText,
+        loadSessionRows,
+        deleteMany,
       };
     }
 
@@ -704,6 +1001,8 @@ window.__ModuleLoader__.load({
         useDeleteStore: plugin.useDeleteStore,
         retryByMessageId: plugin.retryByMessageId,
         retryByText: plugin.retryByText,
+        loadSessionRows: plugin.loadSessionRows,
+        deleteMany: plugin.deleteMany,
       });
 
       ctx.slots.inject("sidebar.workspaces.session.menu.item", () => ctx.slots.register({
@@ -726,6 +1025,31 @@ window.__ModuleLoader__.load({
         order: 20,
         inject: injectFace,
       }, plugin.RetryAssistantAction));
+
+      // 批量删除:官方 settings.section(一个注册项 = 一个设置页)。
+      // label 传 thunk —— 官方在每次投影时重读它,所以切语言后导航文案自动跟随,
+      // 不需要重新注册。
+      ctx.slots.inject("settings.section", () => ctx.slots.register({
+        name: "settings.section",
+        id: `${NS}.bulk-delete`,
+        order: BULK_SECTION_ORDER,
+        label: () => t("bulkNavLabel"),
+        inject: injectFace,
+      }, plugin.BulkDeleteSection));
+
+      // 批量删除页自己的行样式(容器/控件一律内联主题 token,只有 hover 需要样式表)
+      ctx.effect(() => {
+        const style = document.createElement("style");
+        style.setAttribute("data-plugin", `${NS}-bulk`);
+        style.textContent = [
+          `.${NS}-bulk-row{display:flex;gap:8px;align-items:center;padding:6px 10px;`,
+          `border-bottom:1px solid var(--dsw-alias-border-l3);}`,
+          `.${NS}-bulk-row:last-child{border-bottom:0;}`,
+          `.${NS}-bulk-row:hover{background:var(--dsw-alias-interactive-bg-hover);}`,
+        ].join("");
+        document.head.appendChild(style);
+        return () => style.remove();
+      }, `${NS}: bulk delete styles`);
 
       // 用户消息行的「重试」:官方无对应插槽,DOM 注入到复制按钮右侧
       ctx.effect(() => plugin.mountUserRetryButtons(), `${NS}: user message retry buttons`);

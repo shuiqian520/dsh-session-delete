@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-delete",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "description": "DSH 侧栏「删除此会话」+ 消息重试:永久删除会话(日志/工作区归属/内存实例/客户端列表行),并在用户消息与 AI 回复的复制按钮右侧加「重试」。",
   "type": "module",

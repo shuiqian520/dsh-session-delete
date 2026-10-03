@@ -87,6 +87,23 @@ host 半区的改动要重启 DSH 生效;client 半区(浏览器产物)改动要
 - 产物已不存在的会话**不再拒绝**:走「清理列表」(`mode: ghost`),把残留行彻底清掉。
 - 失败/半成功都有顶部轻提示说明(约 3.2s 消失)。
 
+### 批量删除会话
+
+**设置 → 批量删除会话**(order 60):页面列出全部会话,支持筛选、多选、全选「可删除的」,
+确认后一次删掉选中的。适合清理一堆旧会话。
+
+- 每行显示标题、创建时间,以及两个标记:**运行中**、**日志已不存在**(后者点名"删了也只是清列表")。
+- **运行中的会话不可勾选**(复选框禁用),host 侧也会二次拒绝并把该条记为失败项。
+- 提交时请求体带 `confirm: true`;单次最多 **200** 个(超出请分批),重复 id 会自动去重。
+- 结果逐条汇报:成功后轻提示「已删除 N 个会话(,M 个未删除)」,列表自动刷新。
+
+两条 host 路由支撑这个页面(都只是"读取清单 / 批量执行",没有新增持久状态):
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/session-delete/sessions?limit=<n>` | 会话清单:`{ sessionId, title, createdAt, cwd, live, running, artifactExists, deletable, reason? }` |
+| POST | `/api/session-delete/delete-many` | 请求体 `{ sessionIds: [...], confirm: true }` → `{ ok, total, deleted, failed, results: [{ sessionId, ok, mode? , error? }] }` |
+
 ### 重试
 
 | 位置 | 按钮 | 行为 |
@@ -149,6 +166,8 @@ POST /api/session-delete/sweep        # 无需请求体
 |------|------|------|
 | GET | `/api/session-delete/status?sessionId=<id>` | 删除资格:`{ running, artifactExists, deletable, reason }` |
 | POST | `/api/session-delete/delete` | 请求体 `{ sessionId, confirm: true }`;成功 `{ ok, mode, detached, disposed, announced }` |
+| GET | `/api/session-delete/sessions?limit=<n>` | 会话清单(批量删除页的数据源),默认 300 条、上限 1000 |
+| POST | `/api/session-delete/delete-many` | 请求体 `{ sessionIds, confirm: true }`,单次上限 200;逐条汇报结果 |
 | POST | `/api/session-delete/sweep` | 清理失效行(只清无产物的) |
 | GET | `/api/session-delete/retry-source?sessionId=<id>&messageId=<id>` | 只读:解析该消息要重发的文本 `{ role, text, userMessageId, mode: 'queue' }` |
 

@@ -5,6 +5,19 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
+### Added
+
+- **批量删除会话**:设置页新增「批量删除会话」(官方 `settings.section` 插槽,order 60)。
+  列表给出标题/时间/「运行中」「日志已不存在」标记,支持筛选、全选可删除的、多选,
+  确认后一次性永久删除选中项;运行中的会话不可勾选,host 侧也会二次拒绝。
+- host 新增 `GET /api/session-delete/sessions`:用官方 `sessionQuery.listSessions`
+  列出会话,标题走官方批量折叠入口 `readTitleSnapshots`(`SessionHeader` 本身不带标题)。
+- host 新增 `POST /api/session-delete/delete-many`:逐个执行删除管线(顺序执行,避免同时
+  处置多个产物目录),逐条汇报 `{ sessionId, ok, mode | error }`;去重、单次上限 200 个。
+- 单会话删除逻辑抽成 `purgeSession()`,单删与批删共用同一条管线,行为完全一致。
+
 ## [0.3.2] - 2026-10-03
 
 ### Added
