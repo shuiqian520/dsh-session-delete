@@ -20,6 +20,15 @@ AI 回复的**复制按钮右侧**加「重试」。
   = 重发这条输入本身。DSH 的事件日志是 append-only,所以旧回复会留在上方,新回复追加在
   下方(这不是替换式重生成,详见[重试语义](#重试语义))。
 
+## 界面
+
+| 会话行「…」菜单 | 永久删除确认 |
+|---|---|
+| ![会话行菜单里的删除入口](assets/screenshot-1-menu.png) | ![永久删除确认弹窗](assets/screenshot-2-confirm.png) |
+
+截图同时通过 [`screenshots.json`](screenshots.json) 提供给插件市场详情页;换图只要替换
+`assets/` 里的文件(想调顺序或增删就改 `screenshots.json`,最多 8 张)。
+
 ## 环境要求
 
 | 项 | 要求 |

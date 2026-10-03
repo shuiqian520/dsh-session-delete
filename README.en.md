@@ -13,6 +13,16 @@ replies.
   before it; retrying a user message resends that message. The DSH event log is
   append-only, so the old reply stays above and the new one is appended below.
 
+## Screenshots
+
+| Session row "…" menu | Permanent-delete confirmation |
+|---|---|
+| ![Delete entry in the session menu](assets/screenshot-1-menu.png) | ![Permanent-delete confirmation dialog](assets/screenshot-2-confirm.png) |
+
+The same two images are declared to the plugin marketplace through
+[`screenshots.json`](screenshots.json); replacing the files under `assets/` is enough to
+update them (edit `screenshots.json` to reorder, add or drop — up to 8).
+
 ## Requirements
 
 DSH 0.2.x (Web UI or Desktop). No runtime dependencies and no `@deepseek-ai/dsh-*`
