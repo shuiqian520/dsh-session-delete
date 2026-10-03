@@ -64,7 +64,6 @@ window.__ModuleLoader__.load({
         deleteForever: "永久删除",
         bodyGhost: "该会话的产物已不存在,本次只把它从会话列表与工作区中彻底清除。",
         bodyPurge: "该会话的日志与记录会被永久删除,无法恢复;保存在该会话上的数据也会一并消失。",
-        bodyHint: "若无特殊需求,请不要删除会话。",
       },
       en: {
         statusReading: "Reading session state",
@@ -91,7 +90,6 @@ window.__ModuleLoader__.load({
         deleteForever: "Delete permanently",
         bodyGhost: "The session log no longer exists; this only removes it from the session list and workspace.",
         bodyPurge: "The session log and records are deleted permanently and cannot be recovered; data stored on this session disappears too.",
-        bodyHint: "Unless you have a reason, avoid deleting sessions.",
       },
     };
     const FALLBACK_LOCALE = "zh";
@@ -622,14 +620,8 @@ window.__ModuleLoader__.load({
             }, busy ? t("deleting") : t("deleteForever")),
           ),
           children: [
-            React.createElement("p", { key: "warn", style: { margin: "0 0 8px" } },
+            React.createElement("p", { key: "warn", style: { margin: 0 } },
               artifactExists === false ? t("bodyGhost") : t("bodyPurge")),
-            artifactExists === false
-              ? null
-              : React.createElement("p", {
-                key: "hint",
-                style: { margin: 0, color: "var(--dsw-alias-label-caption)" },
-              }, t("bodyHint")),
             error !== null && React.createElement("p", {
               key: "error",
               role: "alert",
