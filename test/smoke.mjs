@@ -697,23 +697,30 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
     body: {},
     createElement: () => {
       const node = {
-        style: {},
+        style: { cssText: '' },
         className: '',
         innerHTML: '',
+        textContent: '',
         disabled: false,
         title: '',
         type: '',
+        parentElement: null,
         attributes: {},
+        children: [],
         setAttribute(name, value) {
           node.attributes[name] = value
         },
         addEventListener() {},
+        append(...nodesToAppend) {
+          node.children.push(...nodesToAppend)
+        },
         remove() {},
         after() {},
       }
       created.push(node)
       return node
     },
+    querySelector: () => null,
     querySelectorAll: () => [],
   }
   globalThis.MutationObserver = class {
@@ -833,11 +840,11 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   assert.equal(typeof injected.actions.notify, 'function')
   assert.equal(typeof injected.actions.toggleSelect, 'function')
   assert.equal(typeof injected.actions.clearSelection, 'function')
-  assert.equal(typeof injected.actions.selectAll, 'function')
+  assert.equal(typeof injected.actions.enterBulk, 'function')
+  assert.equal(typeof injected.actions.exitBulk, 'function')
   assert.equal(typeof injected.useDeleteStore, 'function')
   assert.equal(typeof injected.retryByText, 'function')
   assert.equal(typeof injected.retryByMessageId, 'function')
-  assert.equal(typeof injected.loadSessionRows, 'function')
   assert.equal(typeof injected.deleteMany, 'function')
 
   // 用户消息行重试:文本走客户端会话绑定投递(和输入框发送同一条路)
@@ -861,16 +868,14 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   await assert.rejects(() => injected.retryByText('session-2', '   '), /没有可重发/)
   assert.equal(sent.length, 2)
 
-  // 批量删除页:清单来自 host,提交时带 confirm 标记
-  const rows = await injected.loadSessionRows()
-  assert.deepEqual(rows, [{ sessionId: 'session-2', title: '标题', deletable: true }])
+  // 批量删除:提交时带 confirm 标记,空选择直接拒绝(不打请求)
   const outcome = await injected.deleteMany(['session-2', 'session-3'])
   assert.equal(outcome.deleted, 2)
   assert.deepEqual(deleteManyCalls[0], { sessionIds: ['session-2', 'session-3'], confirm: true })
   await assert.rejects(() => injected.deleteMany([]), /没有选中/)
 
-  // 两个挂载 effect:批量删除样式 + 用户消息按钮注入
-  assert.equal(effects.length, 2)
+  // 三个挂载 effect:批量删除样式 + 用户消息按钮注入 + 「工作区」标题旁的批量删除入口
+  assert.equal(effects.length, 3)
   assert.equal(styles.length, 2)
   assert.match(styles.map((node) => node.textContent).join(''), /dsh-session-delete-select-button/)
   assert.equal(created.length > 0, true)
@@ -883,9 +888,11 @@ test('client 半区:可见文案注册进 locale 服务,服务缺席回退 zh', 
     head: { appendChild: () => {} },
     body: {},
     createElement: () => ({
-      style: {}, className: '', innerHTML: '', attributes: {},
-      setAttribute() {}, addEventListener() {}, remove() {}, after() {},
+      style: { cssText: '' }, className: '', innerHTML: '', textContent: '', attributes: {}, children: [],
+      disabled: false, title: '', type: '', parentElement: null,
+      setAttribute() {}, addEventListener() {}, append() {}, remove() {}, after() {},
     }),
+    querySelector: () => null,
     querySelectorAll: () => [],
   }
   globalThis.MutationObserver = class {

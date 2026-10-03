@@ -67,17 +67,13 @@ window.__ModuleLoader__.load({
         bodyGhost: "该会话的产物已不存在,本次只把它从会话列表与工作区中彻底清除。",
         bodyPurge: "该会话的日志与记录会被永久删除,无法恢复;保存在该会话上的数据也会一并消失。",
         // ---- 侧栏多选批量删除 ----
+        bulkTrigger: "批量删除",
+        bulkTriggerTooltip: "进入批量删除模式:勾选会话后一次删掉",
+        bulkConfirm: "确认删除",
+        bulkBarSelected: "已选 {count} 个",
+        bulkNothingSelected: "没有选中任何会话",
         selectRowTooltip: "选中这个会话(用于批量删除)",
         selectRowRunning: "运行中的会话不能删除",
-        bulkBarLabel: "批量删除会话",
-        bulkBarSelected: "已选 {count} 个会话",
-        bulkSelectAll: "全选可删除的",
-        bulkClear: "清除选择",
-        bulkNothingSelected: "没有选中任何会话",
-        bulkDeleteButton: "永久删除选中的 {count} 个",
-        bulkConfirmTitle: "永久删除 {count} 个会话",
-        bulkConfirmBody: "这些会话的日志与记录会被永久删除,无法恢复;保存在它们上面的数据也会一并消失。",
-        bulkConfirmMore: "……等共 {count} 个",
         bulkWorking: "正在删除…",
         bulkResult: "已删除 {deleted} 个会话",
         bulkResultSkipped: ",{failed} 个未删除",
@@ -108,17 +104,13 @@ window.__ModuleLoader__.load({
         bodyGhost: "The session log no longer exists; this only removes it from the session list and workspace.",
         bodyPurge: "The session log and records are deleted permanently and cannot be recovered; data stored on this session disappears too.",
         // ---- sidebar multi-select bulk delete ----
+        bulkTrigger: "Bulk delete",
+        bulkTriggerTooltip: "Enter bulk delete mode: tick sessions, then delete them at once",
+        bulkConfirm: "Confirm delete",
+        bulkBarSelected: "{count} selected",
+        bulkNothingSelected: "No sessions selected",
         selectRowTooltip: "Select this session (for bulk delete)",
         selectRowRunning: "A running session cannot be deleted",
-        bulkBarLabel: "Bulk delete sessions",
-        bulkBarSelected: "{count} selected",
-        bulkSelectAll: "Select all deletable",
-        bulkClear: "Clear selection",
-        bulkNothingSelected: "No sessions selected",
-        bulkDeleteButton: "Delete {count} permanently",
-        bulkConfirmTitle: "Permanently delete {count} sessions",
-        bulkConfirmBody: "Their logs and records are deleted permanently and cannot be recovered; data stored on them disappears too.",
-        bulkConfirmMore: "…and {count} in total",
         bulkWorking: "Deleting…",
         bulkResult: "Deleted {deleted} sessions",
         bulkResultSkipped: ", {failed} not deleted",
@@ -286,8 +278,8 @@ window.__ModuleLoader__.load({
      * @param locale - Client locale 服务(可缺席)。
      */
     function createSessionDeletePlugin(ctx, t, locale) {
-      // selection = 侧栏多选集合(会话行勾选框写入,浮动条读取)
-      const store = createMiniStore({ pending: null, toast: null, selection: new Set() });
+      // selection = 侧栏多选集合(会话行勾选框写入);bulkMode = 是否处于批量删除模式
+      const store = createMiniStore({ pending: null, toast: null, selection: new Set(), bulkMode: false });
       const useDeleteStore = () => React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
       /**
@@ -349,8 +341,13 @@ window.__ModuleLoader__.load({
         clearSelection: () => store.update((draft) => {
           draft.selection = new Set();
         }),
-        selectAll: (ids) => store.update((draft) => {
-          draft.selection = new Set(ids);
+        enterBulk: () => store.update((draft) => {
+          draft.bulkMode = true;
+          draft.selection = new Set();
+        }),
+        exitBulk: () => store.update((draft) => {
+          draft.bulkMode = false;
+          draft.selection = new Set();
         }),
       };
 
@@ -401,16 +398,6 @@ window.__ModuleLoader__.load({
         await sendRetry(sessionId, trimmed);
       }
 
-      /** 批量删除页的数据源:host 用官方 sessionQuery 列出的会话清单。 */
-      async function loadSessionRows() {
-        const response = await fetch("/api/session-delete/sessions", { headers: { accept: "application/json" } });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(payload && payload.error ? String(payload.error) : `HTTP ${response.status}`);
-        }
-        return Array.isArray(payload.sessions) ? payload.sessions : [];
-      }
-
       /** 批量删除:请求体带 confirm,host 逐条执行并逐条汇报。 */
       async function deleteMany(sessionIds) {
         const ids = Array.isArray(sessionIds) ? sessionIds.map(String).filter((id) => id !== "") : [];
@@ -425,16 +412,6 @@ window.__ModuleLoader__.load({
           throw new Error(payload && payload.error ? String(payload.error) : `HTTP ${response.status}`);
         }
         return payload;
-      }
-
-      /** 时间戳 → 本地可读时间(浏览器 locale)。 */
-      function formatTime(value) {
-        if (typeof value !== "number" || !Number.isFinite(value)) return "";
-        try {
-          return new Date(value).toLocaleString();
-        } catch {
-          return new Date(value).toISOString();
-        }
       }
 
       const refreshIcon = (size) => React.createElement("svg", {
@@ -505,18 +482,22 @@ window.__ModuleLoader__.load({
         : [React.createElement("rect", { key: "box", x: 2.5, y: 2.5, width: 11, height: 11, rx: 2.5 })]);
 
       /**
-       * 会话行 hover 按钮条里的「多选」勾选框。
-       * 运行中的会话不给勾(host 也会二次拒绝),直接把按钮显示为不可用。
+       * 会话行 hover 按钮条里的勾选框。
+       * 只在批量删除模式下出现(官方插槽的约定:不适用时条目返回 null);
+       * 运行中的会话不给勾(host 也会二次拒绝),按钮直接置灰。
        */
       function SessionSelectAction(props) {
         const { sessionId, useSessionStatus, actions: act, useDeleteStore: useStore } = props;
         useLocaleRevision();
         const state = useStore() ?? {};
+        const bulkMode = state.bulkMode === true;
         const selection = state.selection ?? new Set();
         const statuses = useSessionStatus((all) => all);
         const row = statuses === undefined || statuses === null ? undefined : statuses.get(sessionId);
         const running = Boolean(row && row.running);
         const checked = selection.has(sessionId);
+
+        if (!bulkMode) return null;
 
         return React.createElement("button", {
           type: "button",
@@ -532,122 +513,137 @@ window.__ModuleLoader__.load({
         }, selectIcon(checked));
       }
 
-      /**
-       * 侧栏多选浮动条:勾选后出现在窗口底部中间,负责"全选可删除 / 清除 / 永久删除"。
-       * 覆盖层是点击穿透的,所以条目自己要 opt-in pointer-events。
-       */
-      function BulkDeleteBar(props) {
-        const { actions: act, useDeleteStore: useStore } = props;
-        useLocaleRevision();
-        const state = useStore() ?? {};
-        const selection = state.selection ?? new Set();
-        const busyState = React.useState(false);
-        const busy = busyState[0];
-        const setBusy = busyState[1];
-        const confirmingState = React.useState(false);
-        const confirming = confirmingState[0];
-        const setConfirming = confirmingState[1];
-        const ids = [...selection];
 
-        const selectAllDeletable = () => {
-          loadSessionRows().then(
-            (rows) => act.selectAll(rows.filter((row) => row.deletable !== false).map((row) => row.sessionId)),
-            (error) => act.notify(t("retryFailed", { message: error && error.message ? error.message : String(error) })),
-          );
+      /**
+       * 「工作区」标题右边那一行红色小字 —— 批量删除的入口。
+       *
+       * 官方没有标题旁的插槽(`sidebar.workspaces` 是整体替换槽,不许碰),所以把一个小容器
+       * 注到 sectionHeader 的标题后面 —— 与用户消息的重试按钮同一套做法:语义类名子串匹配 +
+       * MutationObserver 幂等补挂(React 重渲染把容器摘掉后自动放回)。
+       *
+       * 三个状态:
+       *   空闲          → 红字「批量删除」
+       *   批量模式·未选  → 「已选 0 个」+「取消」
+       *   批量模式·已选  → 「已选 N 个」+「取消」+ 红字「确认删除」
+       *
+       * 侧栏收起(rail)时官方不渲染标题,入口随之隐藏。
+       */
+      function mountBulkTrigger() {
+        const container = document.createElement("span");
+        container.setAttribute(`data-${NS}-bulk-trigger`, "1");
+        container.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-left:8px;"
+          + "font-size:11px;line-height:16px;white-space:nowrap;";
+
+        const makeButton = () => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.style.cssText = "border:0;background:transparent;padding:0;font:inherit;cursor:pointer;";
+          return button;
+        };
+        const trigger = makeButton();
+        const count = document.createElement("span");
+        const cancel = makeButton();
+        const confirm = makeButton();
+        trigger.style.color = "var(--dsw-alias-state-error-primary)";
+        count.style.color = "var(--dsw-alias-label-caption)";
+        cancel.style.color = "var(--dsw-alias-label-secondary)";
+        confirm.style.color = "var(--dsw-alias-state-error-primary)";
+        container.append(trigger, count, cancel, confirm);
+
+        let busy = false;
+
+        const render = () => {
+          const state = store.getSnapshot();
+          const bulk = state.bulkMode === true;
+          const selected = state.selection ? state.selection.size : 0;
+          trigger.textContent = t("bulkTrigger");
+          trigger.title = t("bulkTriggerTooltip");
+          count.textContent = t("bulkBarSelected", { count: selected });
+          cancel.textContent = t("cancel");
+          confirm.textContent = busy ? t("bulkWorking") : t("bulkConfirm");
+          trigger.style.display = bulk ? "none" : "";
+          count.style.display = bulk ? "" : "none";
+          cancel.style.display = bulk ? "" : "none";
+          // 「确认删除」只在选中之后出现 —— 点了(进入模式并勾选)才出现
+          confirm.style.display = bulk && selected > 0 ? "" : "none";
+          confirm.disabled = busy;
+          cancel.disabled = busy;
         };
 
         const runDelete = () => {
-          setBusy(true);
-          // 删除完把已删的从选择里去掉(失败的留着,方便重试)
-          const finish = (message) => {
-            setBusy(false);
-            setConfirming(false);
-            act.settle(message);
-          };
+          const state = store.getSnapshot();
+          const ids = state.selection ? [...state.selection] : [];
+          if (ids.length === 0 || busy) return;
+          busy = true;
+          render();
           deleteMany(ids).then((payload) => {
             const deleted = typeof payload.deleted === "number" ? payload.deleted : ids.length;
             const failed = typeof payload.failed === "number" ? payload.failed : 0;
             const removed = new Set((payload.results ?? []).filter((item) => item.ok === true).map((item) => item.sessionId));
             const remaining = ids.filter((id) => !removed.has(id));
-            if (remaining.length > 0) act.selectAll(remaining);
-            else act.clearSelection();
-            finish(t("bulkResult", { deleted }) + (failed > 0 ? t("bulkResultSkipped", { failed }) : ""));
+            busy = false;
+            if (remaining.length > 0) {
+              // 失败的留在选择里,方便直接重试
+              store.update((draft) => {
+                draft.selection = new Set(remaining);
+              });
+            } else {
+              actions.exitBulk();
+            }
+            actions.settle(t("bulkResult", { deleted }) + (failed > 0 ? t("bulkResultSkipped", { failed }) : ""));
+            render();
           }).catch((error) => {
-            setBusy(false);
-            setConfirming(false);
-            act.notify(t("retryFailed", { message: error && error.message ? error.message : String(error) }));
+            busy = false;
+            render();
+            actions.notify(t("retryFailed", { message: error && error.message ? error.message : String(error) }));
           });
         };
 
-        if (ids.length === 0) return null;
+        trigger.addEventListener("click", () => actions.enterBulk());
+        cancel.addEventListener("click", () => actions.exitBulk());
+        confirm.addEventListener("click", runDelete);
 
-        return React.createElement(React.Fragment, null, [
-          React.createElement("div", {
-            key: "bar",
-            role: "toolbar",
-            "aria-label": t("bulkBarLabel"),
-            style: {
-              position: "fixed",
-              bottom: 24,
-              left: "50%",
-              transform: "translateX(-50%)",
-              zIndex: 70,
-              pointerEvents: "auto",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-              padding: "8px 12px",
-              borderRadius: 10,
-              fontSize: 13,
-              background: "var(--dsw-alias-bg-module-platform)",
-              color: "var(--dsw-alias-label-primary)",
-              border: "1px solid var(--dsw-alias-border-l3)",
-              boxShadow: "0 8px 28px rgba(0,0,0,.24)",
-            },
-          }, [
-            React.createElement("span", { key: "count", style: { fontWeight: 600 } }, t("bulkBarSelected", { count: ids.length })),
-            React.createElement(Button, { key: "all", variant: "outline", disabled: busy, onClick: selectAllDeletable }, t("bulkSelectAll")),
-            React.createElement(Button, { key: "clear", variant: "outline", disabled: busy, onClick: () => act.clearSelection() }, t("bulkClear")),
-            React.createElement(Button, {
-              key: "delete",
-              variant: "outline",
-              disabled: busy,
-              style: { color: "var(--dsw-alias-state-error-primary)" },
-              onClick: () => setConfirming(true),
-            }, t("bulkDeleteButton", { count: ids.length })),
-          ]),
-          confirming
-            ? React.createElement(Modal, {
-              key: "confirm",
-              open: true,
-              onClose: () => {
-                if (!busy) setConfirming(false);
-              },
-              closeLabel: t("modalClose"),
-              title: t("bulkConfirmTitle", { count: ids.length }),
-              description: ids.slice(0, 8).join("\n"),
-              footer: React.createElement(React.Fragment, null,
-                React.createElement(Button, {
-                  variant: "outline",
-                  disabled: busy,
-                  onClick: () => setConfirming(false),
-                }, t("cancel")),
-                React.createElement(Button, {
-                  variant: "outline",
-                  disabled: busy,
-                  style: { color: "var(--dsw-alias-state-error-primary)" },
-                  onClick: runDelete,
-                }, busy ? t("bulkWorking") : t("deleteForever"))),
-              children: [
-                React.createElement("p", { key: "warn", style: { margin: 0 } }, t("bulkConfirmBody")),
-                ids.length > 8
-                  ? React.createElement("p", { key: "more", style: { margin: "8px 0 0", color: "var(--dsw-alias-label-caption)" } },
-                    t("bulkConfirmMore", { count: ids.length }))
-                  : null,
-              ],
-            })
-            : null,
-        ]);
+        // 幂等补挂:React 重渲染会把容器从标题上摘掉,观察器负责放回去
+        const mount = () => {
+          const header = document.querySelector('[class*="sectionHeader"]');
+          const label = header === null ? null : header.querySelector('[class*="sectionLabel"]');
+          if (label === null) {
+            // 侧栏收起(rail)时官方不渲染标题,入口也不该出现
+            if (container.parentElement !== null) container.remove();
+            return;
+          }
+          if (container.parentElement === label) return;
+          label.after(container);
+        };
+
+        let scheduled = 0;
+        const schedule = () => {
+          if (scheduled !== 0) return;
+          scheduled = window.setTimeout(() => {
+            scheduled = 0;
+            try {
+              mount();
+            } catch (error) {
+              console.warn(`${NS}: bulk trigger mount failed`, error);
+            }
+          }, 120);
+        };
+
+        const observer = new MutationObserver(schedule);
+        observer.observe(document.body, { childList: true, subtree: true });
+        mount();
+        render();
+
+        const unsubscribeStore = store.subscribe(render);
+        const unsubscribeLocale = locale === undefined ? () => {} : locale.subscribe(render);
+
+        return () => {
+          observer.disconnect();
+          unsubscribeStore();
+          unsubscribeLocale();
+          if (scheduled !== 0) window.clearTimeout(scheduled);
+          container.remove();
+        };
       }
 
       /** 当前主视图正在展示的会话 id(DOM 注入的用户消息按钮需要知道发给哪个会话)。 */
@@ -900,8 +896,6 @@ window.__ModuleLoader__.load({
         return React.createElement(
           React.Fragment,
           null,
-          // 侧栏多选的浮动操作条(勾选后出现;未勾选时它自己返回 null)
-          React.createElement(BulkDeleteBar, { key: "bar", actions: act, useDeleteStore: useStore }),
           pending === null || pending === undefined
             ? null
             : React.createElement(DeleteConfirmForm, {
@@ -943,11 +937,10 @@ window.__ModuleLoader__.load({
         DeleteOverlay,
         RetryAssistantAction,
         SessionSelectAction,
-        BulkDeleteBar,
+        mountBulkTrigger,
         mountUserRetryButtons,
         retryByMessageId,
         retryByText,
-        loadSessionRows,
         deleteMany,
       };
     }
@@ -963,7 +956,6 @@ window.__ModuleLoader__.load({
         useDeleteStore: plugin.useDeleteStore,
         retryByMessageId: plugin.retryByMessageId,
         retryByText: plugin.retryByText,
-        loadSessionRows: plugin.loadSessionRows,
         deleteMany: plugin.deleteMany,
       });
 
@@ -1017,6 +1009,9 @@ window.__ModuleLoader__.load({
 
       // 用户消息行的「重试」:官方无对应插槽,DOM 注入到复制按钮右侧
       ctx.effect(() => plugin.mountUserRetryButtons(), `${NS}: user message retry buttons`);
+
+      // 「工作区」标题右边那一行红字入口:批量删除模式的开关 + 取消/确认删除
+      ctx.effect(() => plugin.mountBulkTrigger(), `${NS}: bulk delete trigger`);
     }
 
     exports.apply = apply;
