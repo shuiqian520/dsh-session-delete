@@ -812,27 +812,28 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
     'sidebar.workspaces.session.menu.item',
     'shell.overlay',
     'conversation.chat.assistant-actions',
-    'settings.section',
+    'sidebar.workspaces.session.row.action',
   ])
   const registrations = injections.map((entry) => entry.callback())
   assert.deepEqual(registrations.map((entry) => entry.options.id), [
     'dsh-session-delete.delete-session',
     'dsh-session-delete.overlay',
     'dsh-session-delete.retry-assistant',
-    'dsh-session-delete.bulk-delete',
+    'dsh-session-delete.select-row',
   ])
   assert.equal(registrations[0].options.order, 900)
   // 「重试」排在官方反馈(10)之后,位于复制按钮右侧的同一条 action 行
   assert.equal(registrations[2].options.order, 20)
-  // 批量删除是一个设置页,nav 文案用 thunk(切语言后官方重读,不需要重新注册)
-  assert.equal(registrations[3].options.order, 60)
-  assert.equal(typeof registrations[3].options.label, 'function')
-  assert.equal(registrations[3].options.label(), '批量删除会话')
+  // 侧栏多选:排在官方归档(100)/置顶(200)之后,同一排 hover 按钮
+  assert.equal(registrations[3].options.order, 300)
   for (const registration of registrations) assert.equal(typeof registration.component, 'function')
   const injected = registrations[0].options.inject()
   assert.equal(typeof injected.actions.ask, 'function')
   assert.equal(typeof injected.actions.settle, 'function')
   assert.equal(typeof injected.actions.notify, 'function')
+  assert.equal(typeof injected.actions.toggleSelect, 'function')
+  assert.equal(typeof injected.actions.clearSelection, 'function')
+  assert.equal(typeof injected.actions.selectAll, 'function')
   assert.equal(typeof injected.useDeleteStore, 'function')
   assert.equal(typeof injected.retryByText, 'function')
   assert.equal(typeof injected.retryByMessageId, 'function')
@@ -868,10 +869,10 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   assert.deepEqual(deleteManyCalls[0], { sessionIds: ['session-2', 'session-3'], confirm: true })
   await assert.rejects(() => injected.deleteMany([]), /没有选中/)
 
-  // 两个挂载 effect:批量页样式 + 用户消息按钮注入
+  // 两个挂载 effect:批量删除样式 + 用户消息按钮注入
   assert.equal(effects.length, 2)
   assert.equal(styles.length, 2)
-  assert.match(styles.map((node) => node.textContent).join(''), /dsh-session-delete-bulk-row/)
+  assert.match(styles.map((node) => node.textContent).join(''), /dsh-session-delete-select-button/)
   assert.equal(created.length > 0, true)
 })
 
