@@ -45,6 +45,13 @@ directory into `<profile>/node_modules` and add the dependency + bundle entry by
 - **Delete a session**: session row "…" → "Delete this session" → confirmation dialog.
   Running sessions are refused (the menu item is disabled and the Host re-checks); sessions
   whose log is already gone are still offered, as a list-only cleanup.
+- **Bulk delete**: the "⋯" menu at the right of the workspace section title (next to
+  "Add workspace") collects **session search / view options / bulk delete**. Pick
+  "Bulk delete sessions", tick rows in the list (running sessions cannot be ticked), then
+  the menu offers "select all deletable / clear selection / delete the N selected… / exit".
+  Confirming opens the **same dialog as the single-session delete**, so both look and behave
+  identically. The search and view-option entries delegate to the official buttons — our menu
+  closes first and the official logic takes over, so search and view options behave natively.
 - **Retry**: the refresh icon right of Copy on an assistant reply or a user message.
   Text only — image and file attachments are not resent.
 
@@ -54,6 +61,8 @@ directory into `<profile>/node_modules` and add the dependency + bundle entry by
 |--------|------|---------|
 | GET | `/api/session-delete/status?sessionId=<id>` | `{ running, artifactExists, deletable, reason }` |
 | POST | `/api/session-delete/delete` | body `{ sessionId, confirm: true }` → `{ ok, mode, detached, disposed, announced }` |
+| GET | `/api/session-delete/sessions?limit=<n>` | read-only session list used by "select all deletable" |
+| POST | `/api/session-delete/delete-many` | body `{ sessionIds, confirm: true }` → per-session results |
 | POST | `/api/session-delete/sweep` | clean leftover rows whose log no longer exists |
 | GET | `/api/session-delete/retry-source?sessionId=<id>&messageId=<id>` | read-only: the text that message would resend |
 
