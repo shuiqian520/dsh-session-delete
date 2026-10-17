@@ -66,6 +66,7 @@ const ROUTE_SWEEP = '/api/session-delete/sweep'
 const ROUTE_RETRY_SOURCE = '/api/session-delete/retry-source'
 const ROUTE_SESSIONS = '/api/session-delete/sessions'
 const ROUTE_DELETE_MANY = '/api/session-delete/delete-many'
+/** 临时自检通道:客户端把量到的真实布局/报错回传到这里,落盘供排查。 */
 const BODY_LIMIT_BYTES = 64 * 1024
 const DETACH_ATTEMPTS = 6
 const DETACH_RETRY_MS = 150

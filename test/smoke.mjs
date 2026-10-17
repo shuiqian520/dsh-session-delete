@@ -827,25 +827,37 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   clientExports.apply(clientCtx)
   assert.deepEqual(injections.map((entry) => entry.key), [
     'sidebar.workspaces.session.menu.item',
+    'sidebar.workspaces.session.menu.item',
     'shell.overlay',
     'conversation.chat.assistant-actions',
+    'sidebar.workspaces.session.row.action',
   ])
   const registrations = injections.map((entry) => entry.callback())
   assert.deepEqual(registrations.map((entry) => entry.options.id), [
     'dsh-session-delete.delete-session',
+    'dsh-session-delete.bulk-delete',
     'dsh-session-delete.overlay',
     'dsh-session-delete.retry-assistant',
+    'dsh-session-delete.select-row',
   ])
   assert.equal(registrations[0].options.order, 900)
   // 「重试」排在官方反馈(10)之后,位于复制按钮右侧的同一条 action 行
-  assert.equal(registrations[2].options.order, 20)
+  assert.equal(registrations[3].options.order, 20)
+  // 批量删除项紧跟「删除此会话」之后
+  assert.equal(registrations[1].options.order, 910)
   for (const registration of registrations) assert.equal(typeof registration.component, 'function')
   const injected = registrations[0].options.inject()
   assert.equal(typeof injected.actions.ask, 'function')
   assert.equal(typeof injected.actions.settle, 'function')
   assert.equal(typeof injected.actions.notify, 'function')
-  assert.equal(typeof injected.actions.openBulk, 'function')
-  assert.equal(typeof injected.actions.closeBulk, 'function')
+  assert.equal(typeof injected.actions.toggleSelect, 'function')
+  assert.equal(typeof injected.actions.clearSelection, 'function')
+  assert.equal(typeof injected.actions.selectAll, 'function')
+  assert.equal(typeof injected.actions.enterBulk, 'function')
+  assert.equal(typeof injected.actions.exitBulk, 'function')
+  assert.equal(typeof injected.actions.openBulkConfirm, 'function')
+  assert.equal(typeof injected.actions.closeBulkConfirm, 'function')
+  assert.equal(typeof injected.actions.finishBulk, 'function')
   assert.equal(typeof injected.useDeleteStore, 'function')
   assert.equal(typeof injected.retryByText, 'function')
   assert.equal(typeof injected.retryByMessageId, 'function')
@@ -883,12 +895,11 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   assert.deepEqual(deleteManyCalls[0], { sessionIds: ['session-2', 'session-3'], confirm: true })
   await assert.rejects(() => injected.deleteMany([]), /没有选中/)
 
-  // 三个挂载 effect:样式 + 用户消息按钮注入 + 工作区标题行的「⋯」菜单
+  // 三个挂载 effect:样式 + 用户消息按钮注入 + 标题行「⋯」菜单
   assert.equal(effects.length, 3)
   assert.equal(styles.length, 2)
   const css = styles.map((node) => node.textContent).join('')
-  assert.match(css, /dsh-session-delete-menu-popover/)
-  assert.doesNotMatch(css, /dsh-session-delete-select-button/)
+  assert.match(css, /dsh-session-delete-menu-item/)
   assert.equal(created.length > 0, true)
 })
 
