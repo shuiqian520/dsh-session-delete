@@ -692,36 +692,46 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   const created = []
   const styles = []
   const appendChild = (node) => styles.push(node)
+  const makeNode = () => ({
+    style: { cssText: '' },
+    className: '',
+    innerHTML: '',
+    textContent: '',
+    disabled: false,
+    title: '',
+    type: '',
+    offsetWidth: 0,
+    offsetHeight: 0,
+    parentElement: null,
+    attributes: {},
+    children: [],
+    setAttribute(name, value) {
+      // eslint-disable-next-line no-param-reassign
+      return value === undefined ? undefined : (this.attributes[name] = value)
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    append(...nodesToAppend) {
+      this.children.push(...nodesToAppend)
+    },
+    contains: () => false,
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+    remove() {},
+    after() {},
+    click() {},
+  })
   globalThis.document = {
     head: { appendChild },
-    body: {},
+    body: { appendChild: () => {} },
     createElement: () => {
-      const node = {
-        style: { cssText: '' },
-        className: '',
-        innerHTML: '',
-        textContent: '',
-        disabled: false,
-        title: '',
-        type: '',
-        parentElement: null,
-        attributes: {},
-        children: [],
-        setAttribute(name, value) {
-          node.attributes[name] = value
-        },
-        addEventListener() {},
-        append(...nodesToAppend) {
-          node.children.push(...nodesToAppend)
-        },
-        remove() {},
-        after() {},
-      }
+      const node = makeNode()
       created.push(node)
       return node
     },
     querySelector: () => null,
     querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
   }
   globalThis.MutationObserver = class {
     observe() {}
@@ -819,32 +829,27 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
     'sidebar.workspaces.session.menu.item',
     'shell.overlay',
     'conversation.chat.assistant-actions',
-    'sidebar.workspaces.session.row.action',
   ])
   const registrations = injections.map((entry) => entry.callback())
   assert.deepEqual(registrations.map((entry) => entry.options.id), [
     'dsh-session-delete.delete-session',
     'dsh-session-delete.overlay',
     'dsh-session-delete.retry-assistant',
-    'dsh-session-delete.select-row',
   ])
   assert.equal(registrations[0].options.order, 900)
   // 「重试」排在官方反馈(10)之后,位于复制按钮右侧的同一条 action 行
   assert.equal(registrations[2].options.order, 20)
-  // 侧栏多选:排在官方归档(100)/置顶(200)之后,同一排 hover 按钮
-  assert.equal(registrations[3].options.order, 300)
   for (const registration of registrations) assert.equal(typeof registration.component, 'function')
   const injected = registrations[0].options.inject()
   assert.equal(typeof injected.actions.ask, 'function')
   assert.equal(typeof injected.actions.settle, 'function')
   assert.equal(typeof injected.actions.notify, 'function')
-  assert.equal(typeof injected.actions.toggleSelect, 'function')
-  assert.equal(typeof injected.actions.clearSelection, 'function')
-  assert.equal(typeof injected.actions.enterBulk, 'function')
-  assert.equal(typeof injected.actions.exitBulk, 'function')
+  assert.equal(typeof injected.actions.openBulk, 'function')
+  assert.equal(typeof injected.actions.closeBulk, 'function')
   assert.equal(typeof injected.useDeleteStore, 'function')
   assert.equal(typeof injected.retryByText, 'function')
   assert.equal(typeof injected.retryByMessageId, 'function')
+  assert.equal(typeof injected.loadSessionRows, 'function')
   assert.equal(typeof injected.deleteMany, 'function')
 
   // 用户消息行重试:文本走客户端会话绑定投递(和输入框发送同一条路)
@@ -868,16 +873,22 @@ test('client 半区:加载面、三个注册项与用户消息按钮挂载', asy
   await assert.rejects(() => injected.retryByText('session-2', '   '), /没有可重发/)
   assert.equal(sent.length, 2)
 
+  // 批量删除弹窗的数据源:清单来自 host 只读路由
+  const rows = await injected.loadSessionRows()
+  assert.deepEqual(rows, [{ sessionId: 'session-2', title: '标题', deletable: true }])
+
   // 批量删除:提交时带 confirm 标记,空选择直接拒绝(不打请求)
   const outcome = await injected.deleteMany(['session-2', 'session-3'])
   assert.equal(outcome.deleted, 2)
   assert.deepEqual(deleteManyCalls[0], { sessionIds: ['session-2', 'session-3'], confirm: true })
   await assert.rejects(() => injected.deleteMany([]), /没有选中/)
 
-  // 三个挂载 effect:批量删除样式 + 用户消息按钮注入 + 「工作区」标题旁的批量删除入口
+  // 三个挂载 effect:样式 + 用户消息按钮注入 + 工作区标题行的「⋯」菜单
   assert.equal(effects.length, 3)
   assert.equal(styles.length, 2)
-  assert.match(styles.map((node) => node.textContent).join(''), /dsh-session-delete-select-button/)
+  const css = styles.map((node) => node.textContent).join('')
+  assert.match(css, /dsh-session-delete-menu-popover/)
+  assert.doesNotMatch(css, /dsh-session-delete-select-button/)
   assert.equal(created.length > 0, true)
 })
 
@@ -886,14 +897,18 @@ test('client 半区:可见文案注册进 locale 服务,服务缺席回退 zh', 
   let loaded = null
   globalThis.document = {
     head: { appendChild: () => {} },
-    body: {},
+    body: { appendChild: () => {} },
     createElement: () => ({
       style: { cssText: '' }, className: '', innerHTML: '', textContent: '', attributes: {}, children: [],
-      disabled: false, title: '', type: '', parentElement: null,
-      setAttribute() {}, addEventListener() {}, append() {}, remove() {}, after() {},
+      disabled: false, title: '', type: '', parentElement: null, offsetWidth: 0, offsetHeight: 0,
+      setAttribute() {}, addEventListener() {}, removeEventListener() {}, append() {}, remove() {}, after() {},
+      contains: () => false, getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }),
+      click() {},
     }),
     querySelector: () => null,
     querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
   }
   globalThis.MutationObserver = class {
     observe() {}

@@ -31,7 +31,6 @@ window.__ModuleLoader__.load({
     const NS = "dsh-session-delete";
     const MENU_ORDER = 900;
     /** 会话行 hover 按钮条里的位置:排在官方归档(100)/置顶(200)之后。 */
-    const SELECT_ACTION_ORDER = 300;
     const TOAST_MS = 3200;
 
     const inject = ["slots"];
@@ -66,14 +65,26 @@ window.__ModuleLoader__.load({
         deleteForever: "永久删除",
         bodyGhost: "该会话的产物已不存在,本次只把它从会话列表与工作区中彻底清除。",
         bodyPurge: "该会话的日志与记录会被永久删除,无法恢复;保存在该会话上的数据也会一并消失。",
-        // ---- 侧栏多选批量删除 ----
-        bulkTrigger: "批量删除",
-        bulkTriggerTooltip: "进入批量删除模式:勾选会话后一次删掉",
-        bulkConfirm: "确认删除",
-        bulkBarSelected: "已选 {count} 个",
+        // ---- 工作区标题行的「⋯」菜单 + 批量删除弹窗 ----
+        menuTrigger: "更多",
+        menuSearch: "搜索会话",
+        menuView: "视图选项",
+        menuBulk: "批量删除会话",
+        bulkTitle: "批量删除会话",
+        bulkSubtitle: "勾选要永久删除的会话。运行中的会话不能删除。",
+        bulkIntro: "这些会话的日志与记录会被永久删除,无法恢复;保存在它们上面的数据也会一并消失。",
+        bulkFilter: "筛选标题或会话 id…",
+        bulkSelectAll: "全选可删除的",
+        bulkClear: "清除选择",
+        bulkEmpty: "没有符合条件的会话",
+        bulkLoading: "正在读取会话…",
+        bulkLoadFailed: "读取会话列表失败:{message}",
+        bulkNoTitle: "(无标题会话)",
+        bulkRowRunning: "运行中",
+        bulkRowGhost: "日志已不存在",
+        bulkCount: "共 {total} 个会话,可删除 {deletable} 个",
+        bulkDeleteSelected: "永久删除选中的 {count} 个",
         bulkNothingSelected: "没有选中任何会话",
-        selectRowTooltip: "选中这个会话(用于批量删除)",
-        selectRowRunning: "运行中的会话不能删除",
         bulkWorking: "正在删除…",
         bulkResult: "已删除 {deleted} 个会话",
         bulkResultSkipped: ",{failed} 个未删除",
@@ -103,14 +114,26 @@ window.__ModuleLoader__.load({
         deleteForever: "Delete permanently",
         bodyGhost: "The session log no longer exists; this only removes it from the session list and workspace.",
         bodyPurge: "The session log and records are deleted permanently and cannot be recovered; data stored on this session disappears too.",
-        // ---- sidebar multi-select bulk delete ----
-        bulkTrigger: "Bulk delete",
-        bulkTriggerTooltip: "Enter bulk delete mode: tick sessions, then delete them at once",
-        bulkConfirm: "Confirm delete",
-        bulkBarSelected: "{count} selected",
+        // ---- workspace header "..." menu + bulk delete dialog ----
+        menuTrigger: "More",
+        menuSearch: "Search sessions",
+        menuView: "View options",
+        menuBulk: "Bulk delete sessions",
+        bulkTitle: "Bulk delete sessions",
+        bulkSubtitle: "Tick the sessions to delete permanently. A running session cannot be deleted.",
+        bulkIntro: "Their logs and records are deleted permanently and cannot be recovered; data stored on them disappears too.",
+        bulkFilter: "Filter by title or session id…",
+        bulkSelectAll: "Select all deletable",
+        bulkClear: "Clear selection",
+        bulkEmpty: "No sessions match",
+        bulkLoading: "Loading sessions…",
+        bulkLoadFailed: "Could not load the session list: {message}",
+        bulkNoTitle: "(untitled session)",
+        bulkRowRunning: "running",
+        bulkRowGhost: "log already gone",
+        bulkCount: "{total} sessions, {deletable} deletable",
+        bulkDeleteSelected: "Delete {count} permanently",
         bulkNothingSelected: "No sessions selected",
-        selectRowTooltip: "Select this session (for bulk delete)",
-        selectRowRunning: "A running session cannot be deleted",
         bulkWorking: "Deleting…",
         bulkResult: "Deleted {deleted} sessions",
         bulkResultSkipped: ", {failed} not deleted",
@@ -278,8 +301,8 @@ window.__ModuleLoader__.load({
      * @param locale - Client locale 服务(可缺席)。
      */
     function createSessionDeletePlugin(ctx, t, locale) {
-      // selection = 侧栏多选集合(会话行勾选框写入);bulkMode = 是否处于批量删除模式
-      const store = createMiniStore({ pending: null, toast: null, selection: new Set(), bulkMode: false });
+      // pending = 单会话删除确认;toast = 轻提示;bulkOpen = 批量删除弹窗是否打开
+      const store = createMiniStore({ pending: null, toast: null, bulkOpen: false });
       const useDeleteStore = () => React.useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
       /**
@@ -331,23 +354,12 @@ window.__ModuleLoader__.load({
         notify: (message) => store.update((draft) => {
           draft.toast = { message };
         }),
-        // ---- 侧栏多选 ----
-        toggleSelect: (sessionId) => store.update((draft) => {
-          const next = new Set(draft.selection);
-          if (next.has(sessionId)) next.delete(sessionId);
-          else next.add(sessionId);
-          draft.selection = next;
+        // ---- 批量删除:只是一个"打开/关闭官方 Modal"的开关,选择状态在弹窗组件里 ----
+        openBulk: () => store.update((draft) => {
+          draft.bulkOpen = true;
         }),
-        clearSelection: () => store.update((draft) => {
-          draft.selection = new Set();
-        }),
-        enterBulk: () => store.update((draft) => {
-          draft.bulkMode = true;
-          draft.selection = new Set();
-        }),
-        exitBulk: () => store.update((draft) => {
-          draft.bulkMode = false;
-          draft.selection = new Set();
+        closeBulk: () => store.update((draft) => {
+          draft.bulkOpen = false;
         }),
       };
 
@@ -396,6 +408,26 @@ window.__ModuleLoader__.load({
         const trimmed = typeof text === "string" ? text.trim() : "";
         if (trimmed === "") throw new Error(t("noRetryText"));
         await sendRetry(sessionId, trimmed);
+      }
+
+      /** 批量删除弹窗的数据源:host 用官方 sessionQuery 列出的会话清单。 */
+      async function loadSessionRows() {
+        const response = await fetch("/api/session-delete/sessions", { headers: { accept: "application/json" } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload && payload.error ? String(payload.error) : `HTTP ${response.status}`);
+        }
+        return Array.isArray(payload.sessions) ? payload.sessions : [];
+      }
+
+      /** 时间戳 → 本地可读时间(浏览器 locale)。 */
+      function formatTime(value) {
+        if (typeof value !== "number" || !Number.isFinite(value)) return "";
+        try {
+          return new Date(value).toLocaleString();
+        } catch {
+          return new Date(value).toISOString();
+        }
       }
 
       /** 批量删除:请求体带 confirm,host 逐条执行并逐条汇报。 */
@@ -456,192 +488,206 @@ window.__ModuleLoader__.load({
         }, refreshIcon(16));
       }
 
-      // ---- 侧栏多选批量删除 ----------------------------------------------------
-      //
-      // 入口就在会话列表里:每行 hover 时出现一个勾选框(官方
-      // `sidebar.workspaces.session.row.action`,与归档/置顶同一个按钮条),
-      // 勾选后 `shell.overlay` 里的浮动条显示"已选 N 个 + 删除/清除"。
-      // 这样选中的就是列表里看到的那些行(可以用侧栏自带的搜索/分组先筛)。
-
-      /** 勾选框图标(未选 / 已选)。 */
-      const selectIcon = (checked) => React.createElement("svg", {
-        width: 14,
-        height: 14,
-        viewBox: "0 0 16 16",
-        fill: "none",
-        stroke: "currentColor",
-        strokeWidth: 1.5,
-        strokeLinecap: "round",
-        strokeLinejoin: "round",
-        "aria-hidden": "true",
-      }, checked
-        ? [
-          React.createElement("rect", { key: "box", x: 2.5, y: 2.5, width: 11, height: 11, rx: 2.5, fill: "currentColor", fillOpacity: 0.16 }),
-          React.createElement("path", { key: "tick", d: "M5 8.4l2.1 2.1L11.2 6" }),
-        ]
-        : [React.createElement("rect", { key: "box", x: 2.5, y: 2.5, width: 11, height: 11, rx: 2.5 })]);
-
       /**
-       * 会话行 hover 按钮条里的勾选框。
-       * 只在批量删除模式下出现(官方插槽的约定:不适用时条目返回 null);
-       * 运行中的会话不给勾(host 也会二次拒绝),按钮直接置灰。
-       */
-      function SessionSelectAction(props) {
-        const { sessionId, useSessionStatus, actions: act, useDeleteStore: useStore } = props;
-        useLocaleRevision();
-        const state = useStore() ?? {};
-        const bulkMode = state.bulkMode === true;
-        const selection = state.selection ?? new Set();
-        const statuses = useSessionStatus((all) => all);
-        const row = statuses === undefined || statuses === null ? undefined : statuses.get(sessionId);
-        const running = Boolean(row && row.running);
-        const checked = selection.has(sessionId);
-
-        if (!bulkMode) return null;
-
-        return React.createElement("button", {
-          type: "button",
-          className: `${NS}-select-button`,
-          title: running ? t("selectRowRunning") : t("selectRowTooltip"),
-          "aria-label": t("selectRowTooltip"),
-          "aria-pressed": checked,
-          disabled: running,
-          onClick: () => {
-            if (running) return;
-            act.toggleSelect(sessionId);
-          },
-        }, selectIcon(checked));
-      }
-
-
-      /**
-       * 「工作区」标题右边那一行红色小字 —— 批量删除的入口。
+       * 「工作区」标题行的「⋯」菜单:把官方标题右边那几个入口收成一个点。
        *
-       * 官方没有标题旁的插槽(`sidebar.workspaces` 是整体替换槽,不许碰),所以把一个小容器
-       * 注到 sectionHeader 的标题后面 —— 与用户消息的重试按钮同一套做法:语义类名子串匹配 +
-       * MutationObserver 幂等补挂(React 重渲染把容器摘掉后自动放回)。
+       * 官方 `sidebar.workspaces` 是整体替换槽(不许碰),标题行也没有旁挂插槽,所以走注入:
+       *   - 在官方 `headerActions` 末尾(添加工作区按钮右边)加一个「⋯」按钮;
+       *   - 官方的搜索按钮、视图选项按钮**留在 DOM 里但视觉收起**(视图选项保留一个隐形盒子,
+       *     让它的 Menu 弹层仍有锚点),菜单项靠代理点击触发官方原逻辑;
+       *   - 「批量删除会话」只是把弹窗打开 —— 勾选/取消/确认都在官方 Modal 里(见 BulkDeleteDialog)。
        *
-       * 三个状态:
-       *   空闲          → 红字「批量删除」
-       *   批量模式·未选  → 「已选 0 个」+「取消」
-       *   批量模式·已选  → 「已选 N 个」+「取消」+ 红字「确认删除」
+       * 点击可靠性:React 重渲染会把这个容器从 headerActions 里摘掉,而 `click` 要求按下与
+       * 抬起落在同一节点 —— 节点被换掉的那一瞬间点击就丢了。所以:
+       *   1) 观察器**同步**回挂(不再 setTimeout 防抖,消除"节点不在 DOM"的窗口);
+       *   2) 所有点击用 `pointerdown` 触发(按下即生效,不等抬起)。
        *
        * 侧栏收起(rail)时官方不渲染标题,入口随之隐藏。
        */
-      function mountBulkTrigger() {
+      function mountWorkspaceMenu() {
         const container = document.createElement("span");
-        container.setAttribute(`data-${NS}-bulk-trigger`, "1");
-        container.style.cssText = "display:inline-flex;align-items:center;gap:6px;margin-left:8px;"
-          + "font-size:11px;line-height:16px;white-space:nowrap;";
+        container.setAttribute(`data-${NS}-menu`, "1");
+        container.style.cssText = "display:inline-flex;align-items:center;gap:6px;";
 
-        const makeButton = () => {
+        const makeButton = (className) => {
           const button = document.createElement("button");
           button.type = "button";
+          if (className !== undefined) button.className = className;
           button.style.cssText = "border:0;background:transparent;padding:0;font:inherit;cursor:pointer;";
           return button;
         };
-        const trigger = makeButton();
-        const count = document.createElement("span");
-        const cancel = makeButton();
-        const confirm = makeButton();
-        trigger.style.color = "var(--dsw-alias-state-error-primary)";
-        count.style.color = "var(--dsw-alias-label-caption)";
-        cancel.style.color = "var(--dsw-alias-label-secondary)";
-        confirm.style.color = "var(--dsw-alias-state-error-primary)";
-        container.append(trigger, count, cancel, confirm);
 
-        let busy = false;
+        // ---- 空闲态:「⋯」 ----
+        const trigger = makeButton(`${NS}-menu-trigger`);
+        trigger.textContent = "⋯";
+        trigger.setAttribute("aria-haspopup", "menu");
 
-        const render = () => {
-          const state = store.getSnapshot();
-          const bulk = state.bulkMode === true;
-          const selected = state.selection ? state.selection.size : 0;
-          trigger.textContent = t("bulkTrigger");
-          trigger.title = t("bulkTriggerTooltip");
-          count.textContent = t("bulkBarSelected", { count: selected });
-          cancel.textContent = t("cancel");
-          confirm.textContent = busy ? t("bulkWorking") : t("bulkConfirm");
-          trigger.style.display = bulk ? "none" : "";
-          count.style.display = bulk ? "" : "none";
-          cancel.style.display = bulk ? "" : "none";
-          // 「确认删除」只在选中之后出现 —— 点了(进入模式并勾选)才出现
-          confirm.style.display = bulk && selected > 0 ? "" : "none";
-          confirm.disabled = busy;
-          cancel.disabled = busy;
+        container.append(trigger);
+
+        // ---- 弹层菜单(挂到 body,不受 header 重渲染影响) ----
+        const menu = document.createElement("div");
+        menu.className = `${NS}-menu-popover`;
+        menu.setAttribute("role", "menu");
+        menu.style.display = "none";
+
+        const makeItem = (danger) => {
+          const item = makeButton(`${NS}-menu-item`);
+          if (danger === true) item.setAttribute("data-danger", "1");
+          item.setAttribute("role", "menuitem");
+          return item;
+        };
+        const itemSearch = makeItem(false);
+        const itemView = makeItem(false);
+        const separator = document.createElement("div");
+        separator.className = `${NS}-menu-sep`;
+        const itemBulk = makeItem(true);
+        menu.append(itemSearch, itemView, separator, itemBulk);
+        document.body.appendChild(menu);
+
+        let menuOpen = false;
+
+        /** 代理点击官方按钮:保留官方实现(搜索展开、视图选项弹层),不自己重写。 */
+        const clickNative = (element) => {
+          if (element === null || element === undefined) return;
+          try {
+            element.click();
+          } catch (error) {
+            console.warn(`${NS}: proxy click failed`, error);
+          }
         };
 
-        const runDelete = () => {
-          const state = store.getSnapshot();
-          const ids = state.selection ? [...state.selection] : [];
-          if (ids.length === 0 || busy) return;
-          busy = true;
-          render();
-          deleteMany(ids).then((payload) => {
-            const deleted = typeof payload.deleted === "number" ? payload.deleted : ids.length;
-            const failed = typeof payload.failed === "number" ? payload.failed : 0;
-            const removed = new Set((payload.results ?? []).filter((item) => item.ok === true).map((item) => item.sessionId));
-            const remaining = ids.filter((id) => !removed.has(id));
-            busy = false;
-            if (remaining.length > 0) {
-              // 失败的留在选择里,方便直接重试
-              store.update((draft) => {
-                draft.selection = new Set(remaining);
-              });
-            } else {
-              actions.exitBulk();
-            }
-            actions.settle(t("bulkResult", { deleted }) + (failed > 0 ? t("bulkResultSkipped", { failed }) : ""));
-            render();
-          }).catch((error) => {
-            busy = false;
-            render();
-            actions.notify(t("retryFailed", { message: error && error.message ? error.message : String(error) }));
+        // 弹层里要代理的两个官方按钮 + 添加工作区按钮(用于定位插入点)
+        let nativeSearch = null;
+        let nativeView = null;
+
+        const positionMenu = () => {
+          menu.style.display = "flex";
+          const rect = trigger.getBoundingClientRect();
+          const width = menu.offsetWidth > 0 ? menu.offsetWidth : 176;
+          const height = menu.offsetHeight > 0 ? menu.offsetHeight : 120;
+          const viewportWidth = window.innerWidth || 1280;
+          const viewportHeight = window.innerHeight || 800;
+          let left = rect.right - width;
+          if (left < 8) left = 8;
+          if (left + width > viewportWidth - 8) left = viewportWidth - width - 8;
+          let top = rect.bottom + 4;
+          if (top + height > viewportHeight - 8) top = Math.max(8, rect.top - height - 4);
+          menu.style.left = `${Math.round(left)}px`;
+          menu.style.top = `${Math.round(top)}px`;
+        };
+
+        const openMenu = () => {
+          if (menuOpen) return;
+          menuOpen = true;
+          positionMenu();
+        };
+        const closeMenu = () => {
+          if (!menuOpen) return;
+          menuOpen = false;
+          menu.style.display = "none";
+        };
+        const toggleMenu = () => {
+          if (menuOpen) closeMenu();
+          else openMenu();
+        };
+
+        /**
+         * 按下即触发:pointerdown 在按下的那一刻就派发,不受"按下/抬起之间节点被 React 换掉"
+         * 的影响 —— 这是"点一次没反应、要点两三次"的根因。
+         */
+        const onPress = (element, handler) => {
+          element.addEventListener("pointerdown", (event) => {
+            if (typeof event.button === "number" && event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            handler();
           });
         };
 
-        trigger.addEventListener("click", () => actions.enterBulk());
-        cancel.addEventListener("click", () => actions.exitBulk());
-        confirm.addEventListener("click", runDelete);
+        onPress(trigger, toggleMenu);
+        onPress(itemSearch, () => {
+          closeMenu();
+          clickNative(nativeSearch);
+        });
+        onPress(itemView, () => {
+          closeMenu();
+          clickNative(nativeView);
+        });
+        // 批量删除:关掉菜单,交给官方 Modal(shell.overlay 里渲染)负责勾选与确认
+        onPress(itemBulk, () => {
+          closeMenu();
+          actions.openBulk();
+        });
 
-        // 幂等补挂:React 重渲染会把容器从标题上摘掉,观察器负责放回去
+        const render = () => {
+          trigger.title = t("menuTrigger");
+          trigger.setAttribute("aria-label", t("menuTrigger"));
+          itemSearch.textContent = t("menuSearch");
+          itemView.textContent = t("menuView");
+          itemBulk.textContent = t("menuBulk");
+        };
+
+        // ---- 收编官方入口 + 幂等回挂 ----
         const mount = () => {
           const header = document.querySelector('[class*="sectionHeader"]');
-          const label = header === null ? null : header.querySelector('[class*="sectionLabel"]');
-          if (label === null) {
-            // 侧栏收起(rail)时官方不渲染标题,入口也不该出现
+          const headerActions = header === null ? null : header.querySelector('[class*="headerActions"]');
+          if (headerActions === null) {
+            // 侧栏收起(rail)时官方不渲染标题行,入口也不该出现
             if (container.parentElement !== null) container.remove();
             return;
           }
-          if (container.parentElement === label) return;
-          label.after(container);
+          const shipped = [...headerActions.querySelectorAll("button")].filter((node) => !container.contains(node));
+          const view = shipped.length > 0 ? shipped[0] : null;
+          const plus = shipped.length > 1 ? shipped[shipped.length - 1] : null;
+          const search = header.querySelector('[class*="searchButton"]');
+          if (search !== null) search.style.display = "none";
+          if (view !== null && view !== plus) {
+            // 保留一个 22×22 的盒子(负外边距抵消占位,视觉上没有空隙):它的 Menu 弹层
+            // 需要这个锚点的位置才能贴在标题行下方展开。
+            view.style.cssText = "width:22px;min-width:22px;height:22px;padding:0;margin-left:-22px;"
+              + "border:0;opacity:0;pointer-events:none;";
+          }
+          nativeSearch = search;
+          nativeView = view === plus ? null : view;
+          if (container.parentElement !== headerActions) headerActions.appendChild(container);
         };
 
-        let scheduled = 0;
-        const schedule = () => {
-          if (scheduled !== 0) return;
-          scheduled = window.setTimeout(() => {
-            scheduled = 0;
-            try {
-              mount();
-            } catch (error) {
-              console.warn(`${NS}: bulk trigger mount failed`, error);
-            }
-          }, 120);
-        };
-
-        const observer = new MutationObserver(schedule);
+        const observer = new MutationObserver(() => {
+          // 同步回挂:不要 setTimeout —— 那 120ms 正是点击丢失的窗口
+          try {
+            mount();
+          } catch (error) {
+            console.warn(`${NS}: workspace menu mount failed`, error);
+          }
+        });
         observer.observe(document.body, { childList: true, subtree: true });
         mount();
         render();
+
+        // 点外面 / Esc 关菜单
+        const onDocumentPointerDown = (event) => {
+          if (!menuOpen) return;
+          const target = event.target;
+          if (target === null || target === undefined) return;
+          if (menu.contains(target) || container.contains(target)) return;
+          closeMenu();
+        };
+        const onDocumentKeyDown = (event) => {
+          if (event.key === "Escape") closeMenu();
+        };
+        document.addEventListener("pointerdown", onDocumentPointerDown, true);
+        document.addEventListener("keydown", onDocumentKeyDown, true);
 
         const unsubscribeStore = store.subscribe(render);
         const unsubscribeLocale = locale === undefined ? () => {} : locale.subscribe(render);
 
         return () => {
           observer.disconnect();
+          document.removeEventListener("pointerdown", onDocumentPointerDown, true);
+          document.removeEventListener("keydown", onDocumentKeyDown, true);
           unsubscribeStore();
           unsubscribeLocale();
-          if (scheduled !== 0) window.clearTimeout(scheduled);
+          menu.remove();
           container.remove();
         };
       }
@@ -880,10 +926,217 @@ window.__ModuleLoader__.load({
         });
       }
 
+      /**
+       * 批量删除弹窗:复用官方 Modal + Button(和「永久删除此会话」是同一套 UI 语言)。
+       * 清单来自 host 只读路由,运行中的会话不可勾选,确认后逐条汇报。
+       */
+      function BulkDeleteDialog(props) {
+        const { actions: act } = props;
+        useLocaleRevision();
+        const [phase, setPhase] = React.useState("loading");
+        const [rows, setRows] = React.useState([]);
+        const [error, setError] = React.useState(null);
+        const [selected, setSelected] = React.useState(() => new Set());
+        const [filter, setFilter] = React.useState("");
+        const [busy, setBusy] = React.useState(false);
+
+        React.useEffect(() => {
+          let alive = true;
+          loadSessionRows().then(
+            (list) => {
+              if (!alive) return;
+              setRows(list);
+              setPhase("ready");
+            },
+            (reason) => {
+              if (!alive) return;
+              setError(reason && reason.message ? reason.message : String(reason));
+              setPhase("error");
+            },
+          );
+          return () => {
+            alive = false;
+          };
+        }, []);
+
+        const close = () => {
+          if (busy) return;
+          act.closeBulk();
+        };
+
+        const needle = filter.trim().toLowerCase();
+        const visible = needle === ""
+          ? rows
+          : rows.filter((row) => String(row.title ?? "").toLowerCase().includes(needle)
+            || String(row.sessionId ?? "").toLowerCase().includes(needle));
+        const deletableVisible = visible.filter((row) => row.deletable !== false);
+        const ids = rows
+          .filter((row) => row.deletable !== false && selected.has(row.sessionId))
+          .map((row) => row.sessionId);
+
+        const toggle = (sessionId) => {
+          if (busy) return;
+          setSelected((current) => {
+            const next = new Set(current);
+            if (next.has(sessionId)) next.delete(sessionId);
+            else next.add(sessionId);
+            return next;
+          });
+        };
+        const selectAll = () => {
+          if (busy) return;
+          setSelected(new Set(deletableVisible.map((row) => row.sessionId)));
+        };
+        const clearAll = () => {
+          if (busy) return;
+          setSelected(new Set());
+        };
+
+        const confirm = () => {
+          if (ids.length === 0 || busy) return;
+          setBusy(true);
+          setError(null);
+          deleteMany(ids).then((payload) => {
+            const deleted = typeof payload.deleted === "number" ? payload.deleted : ids.length;
+            const failed = typeof payload.failed === "number" ? payload.failed : 0;
+            act.closeBulk();
+            act.settle(t("bulkResult", { deleted }) + (failed > 0 ? t("bulkResultSkipped", { failed }) : ""));
+          }).catch((reason) => {
+            setBusy(false);
+            setError(reason && reason.message ? reason.message : String(reason));
+          });
+        };
+
+        const rowNode = (row) => {
+          const selectable = row.deletable !== false && !busy;
+          const meta = [
+            row.running === true ? t("bulkRowRunning") : null,
+            row.artifactExists === false ? t("bulkRowGhost") : null,
+            formatTime(row.createdAt),
+          ].filter((part) => part !== null && part !== undefined && part !== "").join(" · ");
+          return React.createElement("label", {
+            key: row.sessionId,
+            style: {
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              padding: "6px 8px",
+              borderRadius: 6,
+              cursor: selectable ? "pointer" : "default",
+              opacity: row.deletable === false ? 0.5 : 1,
+            },
+          }, [
+            React.createElement("input", {
+              key: "box",
+              type: "checkbox",
+              checked: selected.has(row.sessionId),
+              disabled: !selectable,
+              onChange: () => toggle(row.sessionId),
+            }),
+            React.createElement("span", {
+              key: "title",
+              style: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+              title: row.title || row.sessionId,
+            }, row.title || t("bulkNoTitle")),
+            React.createElement("span", {
+              key: "meta",
+              style: { flex: "0 0 auto", fontSize: 12, color: "var(--dsw-alias-label-caption)" },
+            }, meta),
+          ]);
+        };
+
+        const body = [];
+        body.push(React.createElement("p", { key: "intro", style: { margin: 0 } }, t("bulkIntro")));
+        if (phase === "loading") {
+          body.push(React.createElement("p", { key: "loading", style: { margin: "10px 0 0", color: "var(--dsw-alias-label-caption)" } },
+            t("bulkLoading")));
+        } else if (phase === "error") {
+          body.push(React.createElement("p", {
+            key: "load-error",
+            role: "alert",
+            style: { margin: "10px 0 0", color: "var(--dsw-alias-state-error-primary)" },
+          }, t("bulkLoadFailed", { message: error === null ? "" : error })));
+        } else {
+          body.push(React.createElement("div", {
+            key: "toolbar",
+            style: { display: "flex", gap: 8, alignItems: "center", marginTop: 10 },
+          }, [
+            React.createElement("input", {
+              key: "filter",
+              type: "search",
+              value: filter,
+              placeholder: t("bulkFilter"),
+              "aria-label": t("bulkFilter"),
+              disabled: busy,
+              onChange: (event) => setFilter(event && event.target ? event.target.value : ""),
+              style: {
+                flex: "1 1 auto",
+                minWidth: 0,
+                padding: "4px 8px",
+                borderRadius: 6,
+                border: "1px solid var(--dsw-alias-border-l3)",
+                background: "transparent",
+                color: "var(--dsw-alias-label-primary)",
+                font: "inherit",
+              },
+            }),
+            React.createElement(Button, { key: "all", variant: "outline", disabled: busy || deletableVisible.length === 0, onClick: selectAll },
+              t("bulkSelectAll")),
+            React.createElement(Button, { key: "clear", variant: "outline", disabled: busy || selected.size === 0, onClick: clearAll },
+              t("bulkClear")),
+          ]));
+          body.push(React.createElement("div", {
+            key: "list",
+            style: {
+              marginTop: 8,
+              maxHeight: 300,
+              overflowY: "auto",
+              border: "1px solid var(--dsw-alias-border-l3)",
+              borderRadius: 8,
+              padding: 4,
+            },
+          }, visible.length === 0
+            ? React.createElement("p", { style: { margin: "6px 8px", color: "var(--dsw-alias-label-caption)" } }, t("bulkEmpty"))
+            : visible.map(rowNode)));
+          body.push(React.createElement("p", {
+            key: "count",
+            style: { margin: "8px 0 0", fontSize: 12, color: "var(--dsw-alias-label-caption)" },
+          }, t("bulkCount", { total: rows.length, deletable: rows.filter((row) => row.deletable !== false).length })));
+        }
+        if (error !== null && phase !== "error") {
+          body.push(React.createElement("p", {
+            key: "error",
+            role: "alert",
+            style: { margin: "8px 0 0", color: "var(--dsw-alias-state-error-primary)" },
+          }, error));
+        }
+
+        return React.createElement(Modal, {
+          open: true,
+          onClose: close,
+          closeLabel: t("modalClose"),
+          title: t("bulkTitle"),
+          description: t("bulkSubtitle"),
+          footer: React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(Button, { variant: "outline", disabled: busy, onClick: close }, t("cancel")),
+            React.createElement(Button, {
+              variant: "outline",
+              disabled: busy || ids.length === 0,
+              style: { color: "var(--dsw-alias-state-error-primary)" },
+              onClick: confirm,
+            }, busy ? t("bulkWorking") : t("bulkDeleteSelected", { count: ids.length })),
+          ),
+          children: body,
+        });
+      }
+
       function DeleteOverlay(props) {
         const { useDeleteStore: useStore, actions: act } = props;
         const state = useStore();
         const pending = state.pending;
+        const bulkOpen = state.bulkOpen === true;
         const toast = state.toast;
         const message = toast === null || toast === undefined ? null : toast.message;
 
@@ -896,6 +1149,9 @@ window.__ModuleLoader__.load({
         return React.createElement(
           React.Fragment,
           null,
+          bulkOpen
+            ? React.createElement(BulkDeleteDialog, { key: "bulk", actions: act })
+            : null,
           pending === null || pending === undefined
             ? null
             : React.createElement(DeleteConfirmForm, {
@@ -936,11 +1192,11 @@ window.__ModuleLoader__.load({
         DeleteSessionMenuItem,
         DeleteOverlay,
         RetryAssistantAction,
-        SessionSelectAction,
-        mountBulkTrigger,
+        mountWorkspaceMenu,
         mountUserRetryButtons,
         retryByMessageId,
         retryByText,
+        loadSessionRows,
         deleteMany,
       };
     }
@@ -956,6 +1212,7 @@ window.__ModuleLoader__.load({
         useDeleteStore: plugin.useDeleteStore,
         retryByMessageId: plugin.retryByMessageId,
         retryByText: plugin.retryByText,
+        loadSessionRows: plugin.loadSessionRows,
         deleteMany: plugin.deleteMany,
       });
 
@@ -980,28 +1237,25 @@ window.__ModuleLoader__.load({
         inject: injectFace,
       }, plugin.RetryAssistantAction));
 
-      // 侧栏多选:官方会话行的 hover 按钮条(与归档/置顶同一排,排在它们之后)
-      ctx.slots.inject("sidebar.workspaces.session.row.action", () => ctx.slots.register({
-        name: "sidebar.workspaces.session.row.action",
-        id: `${NS}.select-row`,
-        order: SELECT_ACTION_ORDER,
-        inject: injectFace,
-      }, plugin.SessionSelectAction));
-
-      // 批量删除:官方 settings.section(一个注册项 = 一个设置页)。
-      // label 传 thunk —— 官方在每次投影时重读它,所以切语言后导航文案自动跟随,
-      // 不需要重新注册。
-
-      // 批量删除的样式:勾选框按钮 + 浮动条里的行内按钮(容器/控件一律内联主题 token)
+      // 工作区标题行的「⋯」菜单 + 批量删除的样式(容器/控件一律内联主题 token,
+      // 只有 hover / 弹层这些状态需要样式表)
       ctx.effect(() => {
         const style = document.createElement("style");
         style.setAttribute("data-plugin", `${NS}-bulk`);
         style.textContent = [
-          `.${NS}-select-button{display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;`,
-          `color:var(--dsw-alias-label-secondary);cursor:pointer;padding:2px;border-radius:4px;}`,
-          `.${NS}-select-button:hover:not([disabled]){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}`,
-          `.${NS}-select-button[aria-pressed="true"]{color:var(--dsw-alias-state-error-primary);}`,
-          `.${NS}-select-button[disabled]{opacity:.35;cursor:default;}`,
+          `.${NS}-menu-trigger{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;`,
+          `padding:0;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);`,
+          `font-size:15px;line-height:1;cursor:pointer;}`,
+          `.${NS}-menu-trigger:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);}`,
+          `.${NS}-menu-popover{position:fixed;z-index:90;display:flex;flex-direction:column;min-width:176px;padding:4px;`,
+          `border-radius:8px;background:var(--dsw-alias-bg-module-platform);border:1px solid var(--dsw-alias-border-l3);`,
+          `box-shadow:0 10px 30px rgba(0,0,0,.24);}`,
+          `.${NS}-menu-item{display:flex;align-items:center;gap:8px;padding:6px 10px;border:0;border-radius:5px;`,
+          `background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;text-align:left;`,
+          `white-space:nowrap;cursor:pointer;}`,
+          `.${NS}-menu-item:hover{background:var(--dsw-alias-interactive-bg-hover);}`,
+          `.${NS}-menu-item[data-danger="1"]{color:var(--dsw-alias-state-error-primary);}`,
+          `.${NS}-menu-sep{height:1px;margin:4px 6px;background:var(--dsw-alias-border-l3);}`,
         ].join("");
         document.head.appendChild(style);
         return () => style.remove();
@@ -1010,8 +1264,8 @@ window.__ModuleLoader__.load({
       // 用户消息行的「重试」:官方无对应插槽,DOM 注入到复制按钮右侧
       ctx.effect(() => plugin.mountUserRetryButtons(), `${NS}: user message retry buttons`);
 
-      // 「工作区」标题右边那一行红字入口:批量删除模式的开关 + 取消/确认删除
-      ctx.effect(() => plugin.mountBulkTrigger(), `${NS}: bulk delete trigger`);
+      // 「工作区」标题行的「⋯」菜单(搜索 / 视图选项 / 批量删除)
+      ctx.effect(() => plugin.mountWorkspaceMenu(), `${NS}: workspace header menu`);
     }
 
     exports.apply = apply;
